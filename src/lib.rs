@@ -31,15 +31,17 @@ use crate::runner::DsWiFiRunner;
 
 pub struct DsWiFiInterface;
 
+const MAX_CLIENTS: usize = 15;
+
 pub struct DsWiFiClientManager {
-    clients: [Option<DsWiFiClient>; 16],
+    clients: [Option<DsWiFiClient>; MAX_CLIENTS],
     all_clients_mask: DsWifiClientMask,
 }
 impl DsWiFiClientManager {
     pub fn get_next_client_aid(&self) -> Option<AssociationID> {
-        for i in 0..16 {
+        for i in 0..MAX_CLIENTS {
             if self.clients[i].is_none() {
-                return Some(AssociationID::from(i as u16));
+                return Some(AssociationID::from((i + 1) as u16));
             }
         }
         None
@@ -68,12 +70,12 @@ impl DsWiFiClientManager {
 
     pub fn add_client(&mut self, client: DsWiFiClient) {
         let aid = client.association_id;
-        self.clients[aid.aid() as usize] = Some(client);
+        self.clients[(aid.aid() - 1) as usize] = Some(client);
         self.all_clients_mask.mask_add(aid.get_mask_bits());
     }
 
     pub fn remove_client(&mut self, aid: AssociationID) {
-        self.clients[aid.aid() as usize] = None;
+        self.clients[(aid.aid() - 1) as usize] = None;
         self.all_clients_mask.mask_subtract(aid.get_mask_bits());
     }
 }
@@ -139,7 +141,7 @@ impl Default for DsWiFiSharedResources<'_> {
     fn default() -> Self {
         Self {
             client_manager: DsWiFiClientManager {
-                clients: [None; 16],
+                clients: [None; MAX_CLIENTS],
                 all_clients_mask: 0x0000,
             },
             bg_rx_queue: Channel::new(),

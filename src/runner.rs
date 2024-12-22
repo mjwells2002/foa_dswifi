@@ -16,7 +16,7 @@ use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, A
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
 use log::info;
-use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiClientMaskMath};
+use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiClientMaskMath, MAX_CLIENTS};
 use crate::packets::{BeaconType, DSWiFiBeaconTag};
 
 pub struct DsWiFiRunner<'res> {
@@ -41,10 +41,16 @@ impl DsWiFiRunner<'_> {
             todo!("client already exists, need to drop old clients");
         }
 
+        let next_aid = self.client_manager.get_next_client_aid();
+
+        if next_aid.is_none() {
+            panic!("All client slots filled, can't associate new client");
+        }
+
         self.client_manager.add_client(DsWiFiClient {
             state: DsWiFiClientState::Associating,
             associated_mac_address: *auth.header.transmitter_address,
-            association_id: Default::default(),
+            association_id: next_aid.unwrap(),
             last_heard_from: Instant::now(),
         });
 
@@ -79,18 +85,12 @@ impl DsWiFiRunner<'_> {
     async fn handle_assoc_req_frame(&mut self, assoc: AssociationRequestFrame<'_>) {
         info!("assoc request");
 
-        let next_aid = self.client_manager.get_next_client_aid();
+
 
         let client = self.client_manager.get_client_mut(assoc.header.transmitter_address).unwrap();
 
         if client.state != DsWiFiClientState::Associating {
             panic!("Client is not authenticating, but got assoc request");
-        }
-
-        if let Some(aid) = next_aid {
-            client.association_id = aid;
-        } else {
-            panic!("All client slots filled, can't associate new client");
         }
 
         client.last_heard_from = Instant::now();
@@ -137,6 +137,7 @@ impl DsWiFiRunner<'_> {
         info!("Got deauth frame");
 
         let aid = self.client_manager.get_client(deauth.header.transmitter_address).unwrap().association_id;
+        info!("deauthing client with aid {}", aid.aid());
 
         self.client_manager.remove_client(aid);
     }
@@ -222,9 +223,10 @@ impl DsWiFiRunner<'_> {
         info!("Clients Connected: {}", self.client_manager.all_clients_mask.num_clients());
         info!("All Client Mask: {}", self.client_manager.all_clients_mask);
         info!("Client List:");
-        for client_opt in &self.client_manager.clients {
+        for i in 0..MAX_CLIENTS {
+            let client_opt = &self.client_manager.clients[i];
             if let Some(client) = client_opt {
-                info!("Client: aid: {}, mac: {:X?}, state {:?}",client.association_id.aid(),client.associated_mac_address, client.state);
+                info!("Client: aid: {}, mac: {:X?}, state {:?}, index: {}",client.association_id.aid(),client.associated_mac_address, client.state, i);
             }
         }
     }
