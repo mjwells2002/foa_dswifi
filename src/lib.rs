@@ -71,7 +71,25 @@ impl DsWiFiClientManager {
     pub fn add_client(&mut self, client: DsWiFiClient) {
         let aid = client.association_id;
         self.clients[(aid.aid() - 1) as usize] = Some(client);
-        self.all_clients_mask.mask_add(aid.get_mask_bits());
+        if client.state == DsWiFiClientState::Connected {
+            self.all_clients_mask.mask_add(aid.get_mask_bits());
+        }
+    }
+
+    pub fn update_client_state(&mut self, addr: MACAddress, state: DsWiFiClientState) {
+        {
+            let client = self.get_client_mut(addr).unwrap();
+            client.state = state;
+            client.last_heard_from = Instant::now();
+        }
+        let client = self.get_client(addr).unwrap();
+        //todo: sanity check new state is possible given previous state
+        if state == DsWiFiClientState::Connected {
+            self.all_clients_mask.mask_add(client.association_id.get_mask_bits());
+        } else {
+            self.all_clients_mask.mask_subtract(client.association_id.get_mask_bits());
+        }
+
     }
 
     pub fn remove_client(&mut self, aid: AssociationID) {
@@ -214,7 +232,7 @@ impl Interface for DsWiFiInterface {
         interface_control.set_and_lock_channel(7).await.expect("TODO: panic message");
 
         interface_control.set_filter_parameters(BSSID,mac_address,None);
-        interface_control.set_filter_parameters(ReceiverAddress,mac_address,None);
+        interface_control.set_filter_parameters(ReceiverAddress,mac_address,Some([0x00;6]));
 
         interface_control.set_filter_status(BSSID,true);
         interface_control.set_filter_status(ReceiverAddress,true);

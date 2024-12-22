@@ -34,6 +34,7 @@ ieee80211 = { git = "https://github.com/Frostie314159/ieee80211-rs", version = "
 embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"
 embassy-sync = "0.6.1"
+hex-literal = "0.4.1"
 
 
 
