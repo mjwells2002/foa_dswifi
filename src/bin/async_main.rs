@@ -9,7 +9,7 @@ use esp_alloc::EspHeap;
 use esp_backtrace as _;
 use esp_hal::{rng::Rng, timer::timg::TimerGroup};
 use foa::{bg_task::SingleInterfaceRunner, FoAStackResources};
-use log::info;
+use log::{info, LevelFilter};
 use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiSharedResources};
 
 const HEAP_SIZE: usize = 1 * 1024;
@@ -47,6 +47,7 @@ async fn main(spawner: Spawner) {
     esp_println::logger::init_logger_from_env();
 
     init_heap();
+
 
     info!("Hello, world!");
 

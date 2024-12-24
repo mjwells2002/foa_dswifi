@@ -1,4 +1,5 @@
 #![no_std]
+#![feature(core_intrinsics)]
 extern crate alloc;
 
 mod runner;
@@ -177,7 +178,7 @@ pub struct DsWiFiInput<'res> {
 
 impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
     async fn interface_input(&mut self, borrowed_buffer: BorrowedBuffer<'res, 'res>) {
-        info!("InterfaceInput: {:X?}", borrowed_buffer.mpdu_buffer());
+        //info!("InterfaceInput: {:X?}", borrowed_buffer.mpdu_buffer());
         let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
             return;
         };
@@ -191,8 +192,8 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
             FrameType::Control(_) => {
                 todo!()
             }
-            FrameType::Data(_) => {
-                todo!()
+            FrameType::Data(data) => {
+                info!("Data Frame {:X?}", generic_frame.address_2());
             }
             FrameType::Unknown(_) => {
                 info!("Unknown Frame");

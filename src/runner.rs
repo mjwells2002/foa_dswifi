@@ -1,10 +1,12 @@
 use alloc::vec;
 use core::cmp::PartialEq;
+use core::intrinsics::black_box;
 use core::marker::PhantomData;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::channel::DynamicReceiver;
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, WiFiRate};
+use esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
+use esp32_wifi_hal_rs::TxErrorBehaviour::Drop;
 use foa::interface::InterfaceRunner;
 use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint, OffChannelRequest};
 use hex_literal::hex;
@@ -19,7 +21,7 @@ use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame, BeaconFrame, DeauthenticationFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
-use log::info;
+use log::{info, trace};
 use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiClientMaskMath, MAX_CLIENTS};
 use crate::packets::{BeaconType, DSWiFiBeaconTag};
 
@@ -77,13 +79,21 @@ impl DsWiFiRunner<'_> {
             },
         };
 
-        let written = buffer.pwrite_with(frame, 0, true).unwrap();
+        let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
         let _ = self.transmit_endpoint.transmit(
-            &buffer[..written],
-            WiFiRate::PhyRate2ML,
-            TxErrorBehaviour::Drop,
+            &mut buffer[..written],
+            &TxParameters {
+                rate: WiFiRate::PhyRate2ML,
+                wait_for_ack: true,
+                duration: 248,
+                tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
+                interface_one: false,
+                interface_zero: false
+            },
         ).await;
+
+
     }
 
     async fn handle_assoc_req_frame(&mut self, assoc: AssociationRequestFrame<'_>) {
@@ -123,21 +133,26 @@ impl DsWiFiRunner<'_> {
                 }
             };
 
-            let written = buffer.pwrite_with(frame, 0, true).unwrap();
+            let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
             info!("assoc response header: {:X?}",&buffer[0..4]);
 
             let _ = self.transmit_endpoint.transmit(
-                &buffer[..written],
-                WiFiRate::PhyRate2ML,
-                TxErrorBehaviour::Drop,
+                &mut buffer[..written],
+                &TxParameters {
+                    rate: WiFiRate::PhyRate2ML,
+                    wait_for_ack: true,
+                    duration: 248,
+                    tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
+                    interface_one: false,
+                    interface_zero: false
+                },
             ).await;
-
-
         }
-        Timer::after_micros(200).await;
-        //TODO: should probably check for ack of the assoc response first
+
         self.client_manager.update_client_state(assoc.header.transmitter_address,DsWiFiClientState::Connected);
+
+        Timer::after_micros(500).await;
     }
 
     async fn handle_deauth(&mut self, deauth: DeauthenticationFrame<'_>) {
@@ -214,13 +229,20 @@ impl DsWiFiRunner<'_> {
             },
         };
 
-        let written = buffer.pwrite_with(frame, 0, true).unwrap();
+        let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-        let _ = lmac_transmit_endpoint.transmit(
-            &buffer[..written],
-            WiFiRate::PhyRate2ML,
-            TxErrorBehaviour::Drop,
+        let _ = self.transmit_endpoint.transmit(
+            &mut buffer[..written],
+            &TxParameters {
+                rate: WiFiRate::PhyRate2ML,
+                wait_for_ack: false,
+                duration: 0,
+                tx_error_behaviour: TxErrorBehaviour::Drop,
+                interface_one: false,
+                interface_zero: false
+            },
         ).await;
+
     }
 
     async fn debug_log(&self, rate_ticker: &mut Ticker, data_ticker: &mut Ticker) {
@@ -242,10 +264,10 @@ impl DsWiFiRunner<'_> {
                     return;
                 }
                 let mask = self.client_manager.all_clients_mask.to_le_bytes();
-                let mut idle = hex!("e60300000000");
+                let mut idle = hex!("E6 03 02 00 34 1C 05 00 68 00 75 85 DA 87 38 90 5A 0C FC 79 1E 00 DC A9 24 52 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 04 00 02 00");
                 //let payload = [0xe6,0x03,mask[0],mask[1],0x00,0x00u8];
-                idle[2] = mask[0];
-                idle[3] = mask[1];
+                //idle[2] = mask[0];
+                //idle[3] = mask[1];
                 let ack = hex!("a9000000");
 
                 let frame = DataFrame {
@@ -263,20 +285,27 @@ impl DsWiFiRunner<'_> {
                     },
                     payload: Some(idle.as_slice()),
                     _phantom: Default::default(),
+
                 };
 
                 let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
-                let written = buffer.pwrite_with(frame, 0, true).unwrap();
+                let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-                let res1 = self.transmit_endpoint.transmit(
-                    &buffer[..written],
-                    WiFiRate::PhyRate2ML,
-                    TxErrorBehaviour::Drop,
+                let _ = self.transmit_endpoint.transmit(
+                    &mut buffer[..written],
+                    &TxParameters {
+                        rate: WiFiRate::PhyRate2ML,
+                        wait_for_ack: false,
+                        duration: 267,
+                        interface_zero: false,
+                        interface_one: false,
+                        tx_error_behaviour: Drop,
+                    },
                 ).await;
 
-                Timer::after_micros(500).await;
+                //Timer::after_micros(500).await;
 
-                let frame2 = DataFrame {
+                /*let frame2 = DataFrame {
                     header: DataFrameHeader {
                         subtype: DataFrameSubtype::DataCFAck,
                         fcf_flags: FCFFlags::new().with_from_ds(true),
@@ -284,7 +313,7 @@ impl DsWiFiRunner<'_> {
                         address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x03]),
                         address_2: MACAddress::from(self.mac_address),
                         address_3: MACAddress::from(self.mac_address),
-                        sequence_control: SequenceControl::new().with_sequence_number(self.interface_control.get_and_increase_sequence_number()),
+                        sequence_control: SequenceControl::new().with_sequence_number(4095),
                         address_4: None,
                         qos: None,
                         ht_control: None,
@@ -294,14 +323,21 @@ impl DsWiFiRunner<'_> {
                 };
 
                 let mut buffer2 = self.transmit_endpoint.alloc_tx_buf().await;
-                let written2 = buffer.pwrite_with(frame2, 0, true).unwrap();
+                let written2 = buffer.pwrite_with(frame2, 0, false).unwrap();
 
-                let res2 = self.transmit_endpoint.transmit(
-                    &buffer2[..written2],
-                    WiFiRate::PhyRate2ML,
-                    TxErrorBehaviour::Drop,
+
+                let _ = self.transmit_endpoint.transmit(
+                    &mut buffer2[..written2],
+                    &TxParameters {
+                        rate: WiFiRate::PhyRate2ML,
+                        wait_for_ack: false,
+                        duration: 267,
+                        interface_zero: false,
+                        interface_one: false,
+                        tx_error_behaviour: Drop,
+                    },
                 ).await;
-
+                */
 
                 //info!("res1 ok:{} err:{}, res2 ok:{} err:{}", res1.is_err(), res1.is_ok(), res2.is_err(), res2.is_ok());
 
@@ -319,7 +355,7 @@ impl InterfaceRunner for DsWiFiRunner<'_> {
         let mut beacon_ticker = Ticker::every(Duration::from_millis(100));
         let start_time = Instant::now();
         let mut log_ticker = Ticker::every(Duration::from_millis(1000));
-        let mut data_ticker = Ticker::every(Duration::from_millis(6));
+        let mut data_ticker = Ticker::every(Duration::from_millis(33));
         loop {
 
             match select4(self.interface_control.wait_for_off_channel_request(),
