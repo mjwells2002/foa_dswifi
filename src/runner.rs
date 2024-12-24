@@ -3,7 +3,9 @@ use core::cmp::PartialEq;
 use core::intrinsics::black_box;
 use core::marker::PhantomData;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::DynamicReceiver;
+use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use esp32_wifi_hal_rs::TxErrorBehaviour::Drop;
@@ -21,7 +23,7 @@ use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame, BeaconFrame, DeauthenticationFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
-use log::{info, trace};
+use log::{info, trace, warn};
 use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiClientMaskMath, MAX_CLIENTS};
 use crate::packets::{BeaconType, DSWiFiBeaconTag};
 
@@ -30,9 +32,10 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) interface_control: &'res LMacInterfaceControl<'res>,
     pub(crate) mac_address: [u8; 6],
     pub(crate) bg_rx_queue: DynamicReceiver<'res, BorrowedBuffer<'res, 'res>>,
-    pub(crate) client_manager: &'res mut DsWiFiClientManager,
-}
+    pub(crate) client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
 
+    pub(crate) start_time: Instant,
+}
 
 impl DsWiFiRunner<'_> {
     async fn handle_auth_frame(&mut self, auth: AuthenticationFrame<'_>) {
@@ -42,23 +45,27 @@ impl DsWiFiRunner<'_> {
             return;
         }
 
-        let client_already_exists = self.client_manager.has_client(auth.header.transmitter_address);
+
+        let mut client_manager = self.client_manager.lock().await;
+
+        let client_already_exists = client_manager.has_client(auth.header.transmitter_address);
         if client_already_exists {
             todo!("client already exists, need to drop old clients");
         }
 
-        let next_aid = self.client_manager.get_next_client_aid();
+        let next_aid = client_manager.get_next_client_aid();
 
         if next_aid.is_none() {
             panic!("All client slots filled, can't associate new client");
         }
 
-        self.client_manager.add_client(DsWiFiClient {
+        client_manager.add_client(DsWiFiClient {
             state: DsWiFiClientState::Associating,
             associated_mac_address: *auth.header.transmitter_address,
             association_id: next_aid.unwrap(),
             last_heard_from: Instant::now(),
         });
+
 
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
@@ -84,7 +91,7 @@ impl DsWiFiRunner<'_> {
         let _ = self.transmit_endpoint.transmit(
             &mut buffer[..written],
             &TxParameters {
-                rate: WiFiRate::PhyRate2ML,
+                rate: WiFiRate::PhyRate2MS,
                 wait_for_ack: true,
                 duration: 248,
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
@@ -99,60 +106,60 @@ impl DsWiFiRunner<'_> {
 
     async fn handle_assoc_req_frame(&mut self, assoc: AssociationRequestFrame<'_>) {
         info!("assoc request");
+        let mut client_manager = self.client_manager.lock().await;
 
-        {
-            let client = self.client_manager.get_client(assoc.header.transmitter_address).unwrap();
+        let client = client_manager.get_client(assoc.header.transmitter_address).unwrap();
 
-            let mut caps = CapabilitiesInformation::new();
-            caps.set_is_ess(true);
-            //
-            // caps.set_is_short_preamble_allowed(true);
+        let mut caps = CapabilitiesInformation::new();
+        caps.set_is_ess(true);
+        //
+        // caps.set_is_short_preamble_allowed(true);
 
-            let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
-            let frame = AssociationResponseFrame {
-                header: ManagementFrameHeader {
-                    fcf_flags: Default::default(),
-                    receiver_address: assoc.header.transmitter_address,
-                    transmitter_address: MACAddress::from(self.mac_address),
-                    bssid: MACAddress::from(self.mac_address),
-                    sequence_control: SequenceControl::new(),
-                    duration: 162,
-                    ht_control: None,
-                },
-                body: AssociationResponseBody {
-                    capabilities_info: caps,
-                    status_code: IEEE80211StatusCode::Success,
-                    association_id: client.association_id,
-                    elements: element_chain! {
-                            supported_rates![
-                                1 B,
-                                2 B
-                            ]
-                        },
-                    _phantom: Default::default(),
-                }
-            };
+        let frame = AssociationResponseFrame {
+            header: ManagementFrameHeader {
+                fcf_flags: Default::default(),
+                receiver_address: assoc.header.transmitter_address,
+                transmitter_address: MACAddress::from(self.mac_address),
+                bssid: MACAddress::from(self.mac_address),
+                sequence_control: SequenceControl::new(),
+                duration: 162,
+                ht_control: None,
+            },
+            body: AssociationResponseBody {
+                capabilities_info: caps,
+                status_code: IEEE80211StatusCode::Success,
+                association_id: client.association_id,
+                elements: element_chain! {
+                        supported_rates![
+                            1 B,
+                            2 B
+                        ]
+                    },
+                _phantom: Default::default(),
+            }
+        };
 
-            let written = buffer.pwrite_with(frame, 0, false).unwrap();
+        let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-            info!("assoc response header: {:X?}",&buffer[0..4]);
+        info!("assoc response header: {:X?}",&buffer[0..4]);
 
-            let _ = self.transmit_endpoint.transmit(
-                &mut buffer[..written],
-                &TxParameters {
-                    rate: WiFiRate::PhyRate2ML,
-                    wait_for_ack: true,
-                    duration: 248,
-                    tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
-                    interface_one: false,
-                    interface_zero: false,
-                    override_seq_num: true
-                },
-            ).await;
-        }
+        let _ = self.transmit_endpoint.transmit(
+            &mut buffer[..written],
+            &TxParameters {
+                rate: WiFiRate::PhyRate2MS,
+                wait_for_ack: true,
+                duration: 248,
+                tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
+                interface_one: false,
+                interface_zero: false,
+                override_seq_num: true
+            },
+        ).await;
 
-        self.client_manager.update_client_state(assoc.header.transmitter_address,DsWiFiClientState::Connected);
+
+        client_manager.update_client_state(assoc.header.transmitter_address,DsWiFiClientState::Connected);
 
         Timer::after_micros(500).await;
     }
@@ -160,12 +167,36 @@ impl DsWiFiRunner<'_> {
     async fn handle_deauth(&mut self, deauth: DeauthenticationFrame<'_>) {
         info!("Got deauth frame");
 
-        let aid = self.client_manager.get_client(deauth.header.transmitter_address).unwrap().association_id;
+        let mut client_manager = self.client_manager.lock().await;
+
+        let aid = client_manager.get_client(deauth.header.transmitter_address).unwrap().association_id;
         info!("deauthing client with aid {}", aid.aid());
 
-        self.client_manager.remove_client(aid);
+        client_manager.remove_client(aid);
     }
 
+    async fn handle_data_frame(&mut self, data: DataFrame<'_>) {
+        match data.header.subtype {
+            DataFrameSubtype::DataCFAck => {
+                info!("Data CFAck from: {:X?}, for {:X?}", data.header.address_2, data.header.address_3);
+                self.update_client_rx_time(data.header.address_2).await;
+            }
+            DataFrameSubtype::CFAck => {
+                //info!("CFAck from: {:X?}, for {:X?}", data.header.address_2, data.header.address_3);
+                self.update_client_rx_time(data.header.address_2).await;
+            }
+            x => {
+                warn!("unhandled Data Frame Subtype: {:?}", x);
+            }
+        }
+    }
+
+    async fn update_client_rx_time(&self, mac: MACAddress) {
+        let mut client_manager = self.client_manager.lock().await;
+        if let Some(client) = client_manager.get_client_mut(mac) {
+            client.last_heard_from = Instant::now();
+        };
+    }
     async fn handle_bg_rx(
         &mut self,
         buffer: BorrowedBuffer<'_, '_>,
@@ -181,12 +212,15 @@ impl DsWiFiRunner<'_> {
             assoc = AssociationRequestFrame => {
                 self.handle_assoc_req_frame(assoc).await;
             }
+            data = DataFrame => {
+                self.handle_data_frame(data).await;
+            }
 
         };
     }
 
-    async fn send_beacon(&self, start_time: Instant, lmac_interface_control: &LMacInterfaceControl<'_>, lmac_transmit_endpoint: &LMacTransmitEndpoint<'_>, mac_address: MACAddress, rate_ticker: &mut Ticker) {
-        rate_ticker.next().await;
+    async fn send_beacon(&self,ticker: &mut Ticker) {
+        ticker.next().await;
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
@@ -204,14 +238,14 @@ impl DsWiFiRunner<'_> {
         let frame = BeaconFrame {
             header: ManagementFrameHeader {
                 receiver_address: BROADCAST,
-                transmitter_address: mac_address,
-                bssid: mac_address,
+                transmitter_address: MACAddress::from(self.mac_address),
+                bssid: MACAddress::from(self.mac_address),
                 sequence_control: SequenceControl::new(),
                 ..Default::default()
             },
             body: BeaconBody {
                 beacon_interval: 100,
-                timestamp: start_time.elapsed().as_micros(),
+                timestamp: self.start_time.elapsed().as_micros(),
                 capabilities_info: CapabilitiesInformation::new().with_is_ess(true),
                 elements: element_chain! {
                     supported_rates![
@@ -237,7 +271,7 @@ impl DsWiFiRunner<'_> {
         let _ = self.transmit_endpoint.transmit(
             &mut buffer[..written],
             &TxParameters {
-                rate: WiFiRate::PhyRate2ML,
+                rate: WiFiRate::PhyRate2MS,
                 wait_for_ack: false,
                 duration: 0,
                 tx_error_behaviour: TxErrorBehaviour::Drop,
@@ -249,107 +283,102 @@ impl DsWiFiRunner<'_> {
 
     }
 
-    async fn debug_log(&self, rate_ticker: &mut Ticker, data_ticker: &mut Ticker) {
-        match select(rate_ticker.next(), data_ticker.next()).await {
-            Either::First(_) => {
-                info!("=====================================");
-                info!("Clients Connected: {}", self.client_manager.all_clients_mask.num_clients());
-                info!("All Client Mask: {}", self.client_manager.all_clients_mask);
-                info!("Client List:");
-                for i in 0..MAX_CLIENTS {
-                    let client_opt = &self.client_manager.clients[i];
-                    if let Some(client) = client_opt {
-                        info!("Client: aid: {}, mac: {:X?}, state {:?}, index: {}",client.association_id.aid(),client.associated_mac_address, client.state, i);
-                    }
+    async fn send_deauth(&self, target: &[u8; 6]) {
+        //todo: this
+    }
+    async fn handle_timeouts(&self, ticker: &mut Ticker) {
+        ticker.next().await;
+        let mut timed_clients: [Option<AssociationID>; MAX_CLIENTS] = [None; MAX_CLIENTS];
+        let mut i = 0;
+        let mut client_manager = self.client_manager.lock().await;
+        for client in &client_manager.clients {
+            if let Some(client) = client {
+                if client.last_heard_from.elapsed() > Duration::from_secs(1) {
+                    info!("client {:X?} timed out", client.associated_mac_address);
+                    self.send_deauth(&client.associated_mac_address).await;
+                    timed_clients[i] = Some(client.association_id);
+                    i+=1;
                 }
             }
-            Either::Second(_) => {
-                if self.client_manager.all_clients_mask.is_empty() {
-                    return;
-                }
-                let mask = self.client_manager.all_clients_mask.to_le_bytes();
-                let mut idle = hex!("E6 03 02 00 34 1C 05 00 68 00 75 85 DA 87 38 90 5A 0C FC 79 1E 00 DC A9 24 52 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 04 00 02 00");
-                //let payload = [0xe6,0x03,mask[0],mask[1],0x00,0x00u8];
-                //idle[2] = mask[0];
-                //idle[3] = mask[1];
-                let ack = hex!("a9000000");
-
-                let frame = DataFrame {
-                    header: DataFrameHeader {
-                        subtype: DataFrameSubtype::CFPoll,
-                        fcf_flags: FCFFlags::new().with_from_ds(true),
-                        duration: 240,
-                        address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x00]),
-                        address_2: MACAddress::from(self.mac_address),
-                        address_3: MACAddress::from(self.mac_address),
-                        sequence_control: SequenceControl::new(),
-                        address_4: None,
-                        qos: None,
-                        ht_control: None,
-                    },
-                    payload: Some(idle.as_slice()),
-                    _phantom: Default::default(),
-
-                };
-
-                let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
-                let written = buffer.pwrite_with(frame, 0, false).unwrap();
-
-                let dataresult = self.transmit_endpoint.transmit(
-                    &mut buffer[..written],
-                    &TxParameters {
-                        rate: WiFiRate::PhyRate2ML,
-                        wait_for_ack: false,
-                        duration: 267,
-                        interface_zero: false,
-                        interface_one: false,
-                        tx_error_behaviour: Drop,
-                        override_seq_num: true
-                    },
-                ).await;
-
-                //info!("dataresult: {:?}", dataresult);
-
-                //Timer::after_micros(500).await;
-
-                /*let frame2 = DataFrame {
-                    header: DataFrameHeader {
-                        subtype: DataFrameSubtype::DataCFAck,
-                        fcf_flags: FCFFlags::new().with_from_ds(true),
-                        duration: 240,
-                        address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x03]),
-                        address_2: MACAddress::from(self.mac_address),
-                        address_3: MACAddress::from(self.mac_address),
-                        sequence_control: SequenceControl::new(),
-                        address_4: None,
-                        qos: None,
-                        ht_control: None,
-                    },
-                    payload: Some(ack.as_slice()),
-                    _phantom: Default::default(),
-                };
-
-                let mut buffer2 = self.transmit_endpoint.alloc_tx_buf().await;
-                let written2 = buffer.pwrite_with(frame2, 0, false).unwrap();
-
-
-                let _ = self.transmit_endpoint.transmit(
-                    &mut buffer2[..written2],
-                    &TxParameters {
-                        rate: WiFiRate::PhyRate2ML,
-                        wait_for_ack: false,
-                        duration: 267,
-                        interface_zero: false,
-                        interface_one: false,
-                        tx_error_behaviour: Drop,
-                    },
-                ).await;
-                */
-
-                //info!("res1 ok:{} err:{}, res2 ok:{} err:{}", res1.is_err(), res1.is_ok(), res2.is_err(), res2.is_ok());
-
+        };
+        for client in timed_clients {
+            if let Some(client) = client {
+                client_manager.remove_client(client);
             }
         }
+    }
+    async fn send_data_tick(&self, ticker: &mut Ticker) {
+        ticker.next().await;
+        let client_manager = self.client_manager.lock().await;
+
+        if client_manager.all_clients_mask.is_empty() {
+            return;
+        }
+
+        let mask = client_manager.all_clients_mask.to_le_bytes();
+        let mut idle = hex!("E6 03 02 00 34 1C 05 00 68 00 75 85 DA 87 38 90 5A 0C FC 79 1E 00 DC A9 24 52 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 04 00 02 00");
+        //let payload = [0xe6,0x03,mask[0],mask[1],0x00,0x00u8];
+        //idle[2] = mask[1];
+        //idle[3] = mask[0];
+        let ack = hex!("a9000000");
+
+        let frame = DataFrame {
+            header: DataFrameHeader {
+                subtype: DataFrameSubtype::CFPoll,
+                fcf_flags: FCFFlags::new().with_from_ds(true),
+                duration: 240,
+                address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x00]),
+                address_2: MACAddress::from(self.mac_address),
+                address_3: MACAddress::from(self.mac_address),
+                sequence_control: SequenceControl::new(),
+                address_4: None,
+                qos: None,
+                ht_control: None,
+            },
+            payload: Some(idle.as_slice()),
+            _phantom: Default::default(),
+
+        };
+
+        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+
+        let written = buffer.pwrite_with(frame, 0, false).unwrap();
+
+        let _ = self.transmit_endpoint.transmit(
+            &mut buffer[..written],
+            &TxParameters {
+                rate: WiFiRate::PhyRate2MS,
+                wait_for_ack: true,
+                duration: 780,
+                tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
+                interface_one: false,
+                interface_zero: false,
+                override_seq_num: true
+            },
+        ).await;
+    }
+    async fn tick(&self, beacon_ticker: &mut Ticker, data_rate_limit: &mut Ticker, timeout_check_rate: &mut Ticker) {
+        let _ = select3(
+            self.send_data_tick(data_rate_limit),
+            self.send_beacon(beacon_ticker),
+            self.handle_timeouts(timeout_check_rate)
+        ).await;
+    }
+    async fn debug_log(&self, rate_ticker: &mut Ticker) {
+        rate_ticker.next().await;
+        let client_manager = self.client_manager.lock().await;
+
+        info!("=====================================");
+        info!("Clients Connected: {}", client_manager.all_clients_mask.num_clients());
+        info!("All Client Mask: {}", client_manager.all_clients_mask);
+        info!("Client List:");
+        for i in 0..MAX_CLIENTS {
+            let client_opt = &client_manager.clients[i];
+            if let Some(client) = client_opt {
+                info!("Client: aid: {}, mac: {:X?}, state {:?}, index: {}",client.association_id.aid(),client.associated_mac_address, client.state, i);
+            }
+        }
+        return;
     }
 
 
@@ -359,25 +388,26 @@ impl InterfaceRunner for DsWiFiRunner<'_> {
 
     async fn run(&mut self) -> ! {
         info!("Runner Says Hi");
-        let mut beacon_ticker = Ticker::every(Duration::from_millis(100));
-        let start_time = Instant::now();
-        let mut log_ticker = Ticker::every(Duration::from_millis(1000));
-        let mut data_ticker = Ticker::every(Duration::from_millis(33));
-        loop {
 
-            match select4(self.interface_control.wait_for_off_channel_request(),
-                          self.send_beacon(start_time, self.interface_control, &self.transmit_endpoint, MACAddress::from(self.mac_address), &mut beacon_ticker),
-                          self.bg_rx_queue.receive(),
-                          self.debug_log(&mut log_ticker,&mut data_ticker),
-            ).await {
+        let mut beacon_ticker =  Ticker::every(Duration::from_millis(100));
+        let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
+        let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
+        let mut log_ticker = Ticker::every(Duration::from_secs(1));
+
+        loop {
+            match select4(
+                self.interface_control.wait_for_off_channel_request(),
+                self.bg_rx_queue.receive(),
+                self.debug_log(&mut log_ticker),
+                self.tick(&mut beacon_ticker,
+                          &mut data_rate_limit,
+                          &mut timeout_check_rate),
+                ).await {
                 Either4::First(off_channel_request) => {
                     off_channel_request.reject();
-                }
-                Either4::Second(_) => {}
-                Either4::Third(data) => {
-                    self.handle_bg_rx(data).await;
-                }
-                Either4::Fourth(_) => {}
+                },
+                Either4::Second(buffer) => {self.handle_bg_rx(buffer).await;},
+                _ => {}
             }
 
 

@@ -38,6 +38,7 @@ const MAX_CLIENTS: usize = 15;
 pub struct DsWiFiClientManager {
     clients: [Option<DsWiFiClient>; MAX_CLIENTS],
     all_clients_mask: DsWifiClientMask,
+
 }
 impl DsWiFiClientManager {
     pub fn get_next_client_aid(&self) -> Option<AssociationID> {
@@ -150,7 +151,7 @@ impl DsWifiAidClientMaskBits for AssociationID {
 
 
 pub struct DsWiFiSharedResources<'res> {
-    client_manager: DsWiFiClientManager,
+    client_manager: Mutex<NoopRawMutex, DsWiFiClientManager>,
 
     interface_control: Option<LMacInterfaceControl<'res>>,
 
@@ -160,10 +161,10 @@ pub struct DsWiFiSharedResources<'res> {
 impl Default for DsWiFiSharedResources<'_> {
     fn default() -> Self {
         Self {
-            client_manager: DsWiFiClientManager {
+            client_manager: Mutex::from(DsWiFiClientManager {
                 clients: [None; MAX_CLIENTS],
                 all_clients_mask: 0x0000,
-            },
+            }),
             bg_rx_queue: Channel::new(),
             interface_control: None,
         }
@@ -173,8 +174,7 @@ impl Default for DsWiFiSharedResources<'_> {
 pub struct DsWiFiControl<> {}
 
 pub struct DsWiFiInput<'res> {
-    bg_rx_queue: DynamicSender<'res, BorrowedBuffer<'res, 'res>>
-
+    bg_rx_queue: DynamicSender<'res, BorrowedBuffer<'res, 'res>>,
 }
 
 impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
@@ -183,6 +183,12 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
         let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
             return;
         };
+
+        if let Err(_) = self.bg_rx_queue.try_send(borrowed_buffer) {
+            panic!("Failed to send to bg_rx_queue");
+        };
+
+        return;
         match generic_frame.frame_control_field().frame_type() {
             FrameType::Management(_) => {
                 info!("Management Frame");
@@ -194,19 +200,7 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                 todo!()
             }
             FrameType::Data(data) => {
-                if let Some(Ok(dataframe)) = generic_frame.parse_to_typed::<DataFrame>() {
-                    match dataframe.header.subtype {
-                        DataFrameSubtype::DataCFAck => {
-                            info!("Data CFAck from: {:X?}, for {:X?}", dataframe.header.address_2, dataframe.header.address_3);
-                        }
-                        DataFrameSubtype::CFAck => {
-                            info!("CFAck from: {:X?}, for {:X?}", dataframe.header.address_2, dataframe.header.address_3);
-                        }
-                        x => {
-                            warn!("unhandled Data Frame Subtype: {:?}", x);
-                        }
-                    }
-                }
+
 
                 //info!("Data Frame {:X?}", generic_frame.address_2());
             }
@@ -265,12 +259,14 @@ impl Interface for DsWiFiInterface {
             DsWiFiRunner {
                 transmit_endpoint,
                 interface_control,
-                client_manager: &mut shared_resources.client_manager,
+                client_manager: &shared_resources.client_manager,
                 mac_address,
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_receiver(),
+                start_time: Instant::now(),
+
             },
             DsWiFiInput {
-                bg_rx_queue: shared_resources.bg_rx_queue.dyn_sender()
+                bg_rx_queue: shared_resources.bg_rx_queue.dyn_sender(),
             }
         )
     }
