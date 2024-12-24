@@ -67,7 +67,7 @@ impl DsWiFiRunner<'_> {
                 receiver_address: auth.header.transmitter_address,
                 transmitter_address: MACAddress::from(self.mac_address),
                 bssid: MACAddress::from(self.mac_address),
-                sequence_control: SequenceControl::new().with_sequence_number(self.interface_control.get_and_increase_sequence_number()),
+                sequence_control: SequenceControl::new(),
                 ..Default::default()
             },
             body: AuthenticationBody {
@@ -89,7 +89,8 @@ impl DsWiFiRunner<'_> {
                 duration: 248,
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
                 interface_one: false,
-                interface_zero: false
+                interface_zero: false,
+                override_seq_num: true
             },
         ).await;
 
@@ -115,7 +116,7 @@ impl DsWiFiRunner<'_> {
                     receiver_address: assoc.header.transmitter_address,
                     transmitter_address: MACAddress::from(self.mac_address),
                     bssid: MACAddress::from(self.mac_address),
-                    sequence_control: SequenceControl::new().with_sequence_number(self.interface_control.get_and_increase_sequence_number()),
+                    sequence_control: SequenceControl::new(),
                     duration: 162,
                     ht_control: None,
                 },
@@ -145,7 +146,8 @@ impl DsWiFiRunner<'_> {
                     duration: 248,
                     tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
                     interface_one: false,
-                    interface_zero: false
+                    interface_zero: false,
+                    override_seq_num: true
                 },
             ).await;
         }
@@ -179,6 +181,7 @@ impl DsWiFiRunner<'_> {
             assoc = AssociationRequestFrame => {
                 self.handle_assoc_req_frame(assoc).await;
             }
+
         };
     }
 
@@ -203,7 +206,7 @@ impl DsWiFiRunner<'_> {
                 receiver_address: BROADCAST,
                 transmitter_address: mac_address,
                 bssid: mac_address,
-                sequence_control: SequenceControl::new().with_sequence_number(lmac_interface_control.get_and_increase_sequence_number()),
+                sequence_control: SequenceControl::new(),
                 ..Default::default()
             },
             body: BeaconBody {
@@ -239,7 +242,8 @@ impl DsWiFiRunner<'_> {
                 duration: 0,
                 tx_error_behaviour: TxErrorBehaviour::Drop,
                 interface_one: false,
-                interface_zero: false
+                interface_zero: false,
+                override_seq_num: true
             },
         ).await;
 
@@ -278,7 +282,7 @@ impl DsWiFiRunner<'_> {
                         address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x00]),
                         address_2: MACAddress::from(self.mac_address),
                         address_3: MACAddress::from(self.mac_address),
-                        sequence_control: SequenceControl::new().with_sequence_number(self.interface_control.get_and_increase_sequence_number()),
+                        sequence_control: SequenceControl::new(),
                         address_4: None,
                         qos: None,
                         ht_control: None,
@@ -291,7 +295,7 @@ impl DsWiFiRunner<'_> {
                 let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
                 let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-                let _ = self.transmit_endpoint.transmit(
+                let dataresult = self.transmit_endpoint.transmit(
                     &mut buffer[..written],
                     &TxParameters {
                         rate: WiFiRate::PhyRate2ML,
@@ -300,8 +304,11 @@ impl DsWiFiRunner<'_> {
                         interface_zero: false,
                         interface_one: false,
                         tx_error_behaviour: Drop,
+                        override_seq_num: true
                     },
                 ).await;
+
+                //info!("dataresult: {:?}", dataresult);
 
                 //Timer::after_micros(500).await;
 
@@ -313,7 +320,7 @@ impl DsWiFiRunner<'_> {
                         address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x03]),
                         address_2: MACAddress::from(self.mac_address),
                         address_3: MACAddress::from(self.mac_address),
-                        sequence_control: SequenceControl::new().with_sequence_number(4095),
+                        sequence_control: SequenceControl::new(),
                         address_4: None,
                         qos: None,
                         ht_control: None,

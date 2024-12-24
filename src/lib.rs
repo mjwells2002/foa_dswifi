@@ -19,14 +19,15 @@ use esp32_wifi_hal_rs::RxFilterInterface::Zero;
 use foa::interface;
 use foa::interface::{Interface, InterfaceInput, InterfaceRunner};
 use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint};
-use ieee80211::common::{AssociationID, CapabilitiesInformation, FrameType, ManagementFrameSubtype, SequenceControl};
-use ieee80211::{element_chain, supported_rates, GenericFrame};
+use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FrameType, ManagementFrameSubtype, SequenceControl};
+use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
+use ieee80211::data_frame::DataFrame;
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{BeaconFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::BeaconBody;
 use ieee80211::scroll::Pwrite;
-use log::info;
+use log::{info, warn};
 
 use crate::runner::DsWiFiRunner;
 
@@ -193,7 +194,21 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                 todo!()
             }
             FrameType::Data(data) => {
-                info!("Data Frame {:X?}", generic_frame.address_2());
+                if let Some(Ok(dataframe)) = generic_frame.parse_to_typed::<DataFrame>() {
+                    match dataframe.header.subtype {
+                        DataFrameSubtype::DataCFAck => {
+                            info!("Data CFAck from: {:X?}, for {:X?}", dataframe.header.address_2, dataframe.header.address_3);
+                        }
+                        DataFrameSubtype::CFAck => {
+                            info!("CFAck from: {:X?}, for {:X?}", dataframe.header.address_2, dataframe.header.address_3);
+                        }
+                        x => {
+                            warn!("unhandled Data Frame Subtype: {:?}", x);
+                        }
+                    }
+                }
+
+                //info!("Data Frame {:X?}", generic_frame.address_2());
             }
             FrameType::Unknown(_) => {
                 info!("Unknown Frame");

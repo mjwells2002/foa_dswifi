@@ -562,7 +562,7 @@ dependencies = [
 [[package]]
 name = "esp32-wifi-hal-rs"
 version = "0.1.0"
-source = "git+https://github.com/esp32-open-mac/esp32-wifi-hal-rs.git#266245f0faa72895d931b87bb490773f0926b609"
+source = "git+https://github.com/esp32-open-mac/esp32-wifi-hal-rs.git#0270251ee7d3b290ba50581867643d51be44ca3a"
 dependencies = [
  "atomic-waker",
  "bitfield-struct",
@@ -587,7 +587,7 @@ checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 [[package]]
 name = "foa"
 version = "0.1.0"
-source = "git+https://github.com/esp32-open-mac/FoA.git#81e098737bc8f83b1569f1acc9b26f0175fb61c2"
+source = "git+https://github.com/esp32-open-mac/FoA.git#61447ae25dc3f8d77d0d34d86115628e8c47f0c2"
 dependencies = [
  "critical-section",
  "embassy-futures",
