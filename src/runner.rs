@@ -201,12 +201,7 @@ impl DsWiFiRunner<'_> {
 
     async fn send_beacon(&self,ticker: &mut Ticker) {
         ticker.next().await;
-        {
-            let client_manager = self.client_manager.lock();
-            if !client_manager.await.all_clients_mask.is_empty() {
-                return;
-            }
-        }
+
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
@@ -360,13 +355,11 @@ impl DsWiFiRunner<'_> {
         ).await;
         //TODO: for some reason awaiting the send doesnt always wait for the frame to be sent it seems?
         let tx = Instant::now();
-
         if (tx - tx_pre).as_micros() < 200 {
-            let t  = Timer::after_micros(700);
+            let t  = Timer::after_micros(700); //frame is roughly 700us large
             warn!("tx took {} micros", (tx - tx_pre).as_micros());
             t.await;
         }
-
         let tx = Instant::now();
 
         if res.is_err() {
