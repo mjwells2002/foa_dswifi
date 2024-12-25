@@ -201,6 +201,12 @@ impl DsWiFiRunner<'_> {
 
     async fn send_beacon(&self,ticker: &mut Ticker) {
         ticker.next().await;
+        {
+            let client_manager = self.client_manager.lock();
+            if !client_manager.await.all_clients_mask.is_empty() {
+                return;
+            }
+        }
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
@@ -339,6 +345,7 @@ impl DsWiFiRunner<'_> {
             warn!("ack received after timeout");
         }
 
+        let tx_pre = Instant::now();
         let res = self.transmit_endpoint.transmit(
             &mut buffer[..written],
             &TxParameters {
@@ -351,14 +358,24 @@ impl DsWiFiRunner<'_> {
                 override_seq_num: true
             },
         ).await;
+        //TODO: for some reason awaiting the send doesnt always wait for the frame to be sent it seems?
         let tx = Instant::now();
+
+        if (tx - tx_pre).as_micros() < 200 {
+            let t  = Timer::after_micros(700);
+            warn!("tx took {} micros", (tx - tx_pre).as_micros());
+            t.await;
+        }
+
+        let tx = Instant::now();
+
         if res.is_err() {
             warn!("tx failed");
             return;
         }
 
         //TODO: this probably isnt correct, correct value would be the determined using the beacon params for max frame tx time
-        let mut timeout = Timer::after_micros(1200 * (mask.num_clients() as u64));
+        let mut timeout = Timer::after_micros(500 * (mask.num_clients() as u64));
 
         while !mask.is_empty() {
             match select(&mut timeout,self.ack_rx_queue.receive()).await {
