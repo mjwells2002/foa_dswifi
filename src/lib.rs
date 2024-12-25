@@ -24,10 +24,10 @@ use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
 use ieee80211::data_frame::DataFrame;
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
-use ieee80211::mgmt_frame::{BeaconFrame, ManagementFrameHeader};
+use ieee80211::mgmt_frame::{BeaconFrame, ManagementFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::BeaconBody;
 use ieee80211::scroll::Pwrite;
-use log::{info, warn};
+use log::{error, info, warn};
 
 use crate::runner::DsWiFiRunner;
 
@@ -122,12 +122,12 @@ pub trait DsWifiClientMaskMath {
 }
 impl DsWifiClientMaskMath for DsWifiClientMask {
     fn mask_add(&mut self, other: DsWifiClientMask) -> DsWifiClientMask {
-        self.bitor_assign(0x0001 << other);
+        self.bitor_assign(other);
         *self
     }
 
     fn mask_subtract(&mut self, other: DsWifiClientMask) -> DsWifiClientMask {
-        self.bitand_assign(!(0x0001 << other));
+        self.bitand_assign(!other);
         *self
     }
 
@@ -144,8 +144,9 @@ pub trait DsWifiAidClientMaskBits {
 }
 impl DsWifiAidClientMaskBits for AssociationID {
     fn get_mask_bits(&self) -> DsWifiClientMask {
-        0x0001 << self.aid()
+        0x0001 << (self.aid() as u8)
     }
+
 }
 
 
@@ -156,6 +157,7 @@ pub struct DsWiFiSharedResources<'res> {
     interface_control: Option<LMacInterfaceControl<'res>>,
 
     bg_rx_queue: Channel<NoopRawMutex, BorrowedBuffer<'res, 'res>, 4>,
+    ack_rx_queue: Channel<NoopRawMutex, (MACAddress, Instant), 4>,
 }
 
 impl Default for DsWiFiSharedResources<'_> {
@@ -166,6 +168,7 @@ impl Default for DsWiFiSharedResources<'_> {
                 all_clients_mask: 0x0000,
             }),
             bg_rx_queue: Channel::new(),
+            ack_rx_queue: Channel::new(),
             interface_control: None,
         }
     }
@@ -175,6 +178,7 @@ pub struct DsWiFiControl<> {}
 
 pub struct DsWiFiInput<'res> {
     bg_rx_queue: DynamicSender<'res, BorrowedBuffer<'res, 'res>>,
+    ack_rx_queue: DynamicSender<'res, (MACAddress, Instant)>,
 }
 
 impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
@@ -183,10 +187,39 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
         let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
             return;
         };
+        match generic_frame.frame_control_field().frame_type() {
+            FrameType::Management(_) => {
+                info!("Management Frame");
+                if let Err(_) = self.bg_rx_queue.try_send(borrowed_buffer) {
+                    // it will probably retry, this should be non-fatal
+                    error!("Failed to send to bg_rx_queue");
+                };
+            }
+            FrameType::Data(data) => {
+                match data {
+                    DataFrameSubtype::DataCFAck => {
+                        //TODO: parse frame and extract the app payload (if present) and forward it to control layer
 
-        if let Err(_) = self.bg_rx_queue.try_send(borrowed_buffer) {
-            panic!("Failed to send to bg_rx_queue");
-        };
+                        if let Err(_) = self.ack_rx_queue.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
+                            error!("Failed to send ack to runner");
+                        }
+                    }
+                    DataFrameSubtype::CFAck => {
+                        if let Err(_) = self.ack_rx_queue.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
+                            error!("Failed to send ack to runner");
+                        }
+                    }
+
+                    _ => {
+                        warn!("Unhandled data Frame");
+                    }
+                }
+            }
+            _ => {
+                warn!("Unknown Frame");
+            }
+        }
+
 
         return;
         match generic_frame.frame_control_field().frame_type() {
@@ -263,10 +296,11 @@ impl Interface for DsWiFiInterface {
                 mac_address,
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_receiver(),
                 start_time: Instant::now(),
-
+                ack_rx_queue: shared_resources.ack_rx_queue.dyn_receiver(),
             },
             DsWiFiInput {
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_sender(),
+                ack_rx_queue: shared_resources.ack_rx_queue.dyn_sender(),
             }
         )
     }

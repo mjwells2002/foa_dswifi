@@ -1,5 +1,6 @@
 use alloc::vec;
 use core::cmp::PartialEq;
+use core::future::Future;
 use core::intrinsics::black_box;
 use core::marker::PhantomData;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
@@ -24,7 +25,7 @@ use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, A
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
 use log::{info, trace, warn};
-use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiClientMaskMath, MAX_CLIENTS};
+use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, MAX_CLIENTS};
 use crate::packets::{BeaconType, DSWiFiBeaconTag};
 
 pub struct DsWiFiRunner<'res> {
@@ -33,7 +34,7 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) mac_address: [u8; 6],
     pub(crate) bg_rx_queue: DynamicReceiver<'res, BorrowedBuffer<'res, 'res>>,
     pub(crate) client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
-
+    pub(crate) ack_rx_queue: DynamicReceiver<'res, (MACAddress, Instant)>,
     pub(crate) start_time: Instant,
 }
 
@@ -113,7 +114,7 @@ impl DsWiFiRunner<'_> {
         let mut caps = CapabilitiesInformation::new();
         caps.set_is_ess(true);
         //
-        // caps.set_is_short_preamble_allowed(true);
+        caps.set_is_short_preamble_allowed(true);
 
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
@@ -174,23 +175,6 @@ impl DsWiFiRunner<'_> {
 
         client_manager.remove_client(aid);
     }
-
-    async fn handle_data_frame(&mut self, data: DataFrame<'_>) {
-        match data.header.subtype {
-            DataFrameSubtype::DataCFAck => {
-                info!("Data CFAck from: {:X?}, for {:X?}", data.header.address_2, data.header.address_3);
-                self.update_client_rx_time(data.header.address_2).await;
-            }
-            DataFrameSubtype::CFAck => {
-                //info!("CFAck from: {:X?}, for {:X?}", data.header.address_2, data.header.address_3);
-                self.update_client_rx_time(data.header.address_2).await;
-            }
-            x => {
-                warn!("unhandled Data Frame Subtype: {:?}", x);
-            }
-        }
-    }
-
     async fn update_client_rx_time(&self, mac: MACAddress) {
         let mut client_manager = self.client_manager.lock().await;
         if let Some(client) = client_manager.get_client_mut(mac) {
@@ -212,10 +196,6 @@ impl DsWiFiRunner<'_> {
             assoc = AssociationRequestFrame => {
                 self.handle_assoc_req_frame(assoc).await;
             }
-            data = DataFrame => {
-                self.handle_data_frame(data).await;
-            }
-
         };
     }
 
@@ -288,6 +268,10 @@ impl DsWiFiRunner<'_> {
     }
     async fn handle_timeouts(&self, ticker: &mut Ticker) {
         ticker.next().await;
+        self.handle_timeouts_inner().await;
+    }
+
+    async fn handle_timeouts_inner(&self) {
         let mut timed_clients: [Option<AssociationID>; MAX_CLIENTS] = [None; MAX_CLIENTS];
         let mut i = 0;
         let mut client_manager = self.client_manager.lock().await;
@@ -307,19 +291,26 @@ impl DsWiFiRunner<'_> {
             }
         }
     }
+
     async fn send_data_tick(&self, ticker: &mut Ticker) {
         ticker.next().await;
-        let client_manager = self.client_manager.lock().await;
 
-        if client_manager.all_clients_mask.is_empty() {
-            return;
-        }
+        let mut mask = {
+            let client_manager = self.client_manager.lock().await;
 
-        let mask = client_manager.all_clients_mask.to_le_bytes();
+            if client_manager.all_clients_mask.is_empty() {
+                return;
+            }
+
+             client_manager.all_clients_mask
+        };
+
+        let mask_le_bytes = mask.to_le_bytes();
         let mut idle = hex!("E6 03 02 00 34 1C 05 00 68 00 75 85 DA 87 38 90 5A 0C FC 79 1E 00 DC A9 24 52 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 04 00 02 00");
         //let payload = [0xe6,0x03,mask[0],mask[1],0x00,0x00u8];
-        //idle[2] = mask[1];
-        //idle[3] = mask[0];
+        idle[2] = mask_le_bytes[0];
+        idle[3] = mask_le_bytes[1];
+
         let ack = hex!("a9000000");
 
         let frame = DataFrame {
@@ -344,11 +335,15 @@ impl DsWiFiRunner<'_> {
 
         let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-        let _ = self.transmit_endpoint.transmit(
+        while self.ack_rx_queue.try_receive().is_ok() {
+            warn!("ack received after timeout");
+        }
+
+        let res = self.transmit_endpoint.transmit(
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                wait_for_ack: true,
+                wait_for_ack: false,
                 duration: 780,
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
                 interface_one: false,
@@ -356,6 +351,29 @@ impl DsWiFiRunner<'_> {
                 override_seq_num: true
             },
         ).await;
+        let tx = Instant::now();
+        if res.is_err() {
+            warn!("tx failed");
+            return;
+        }
+
+        //TODO: this probably isnt correct, correct value would be the determined using the beacon params for max frame tx time
+        let mut timeout = Timer::after_micros(1200 * (mask.num_clients() as u64));
+
+        while !mask.is_empty() {
+            match select(&mut timeout,self.ack_rx_queue.receive()).await {
+                Either::First(_) => { warn!("ack timeout"); break; }
+                Either::Second((ack_from,ack_enqueue_time)) => {
+                    let mut client_manager = self.client_manager.lock().await;
+                    if let Some(client) = client_manager.get_client_mut(ack_from) {
+                        let ack = Instant::now();
+                        info!("ack latency: {} / {}", (ack - tx).as_micros(), (ack - ack_enqueue_time).as_micros());
+                        client.last_heard_from = Instant::now();
+                        mask.mask_subtract(client.association_id.get_mask_bits());
+                    }
+                }
+            }
+        }
     }
     async fn tick(&self, beacon_ticker: &mut Ticker, data_rate_limit: &mut Ticker, timeout_check_rate: &mut Ticker) {
         let _ = select3(
