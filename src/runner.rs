@@ -392,44 +392,16 @@ impl DsWiFiRunner<'_> {
             }
         }
     }
-    async fn tick(&self, beacon_ticker: &mut Ticker, timeout_check_rate: &mut Ticker) {
-        let _ = select(
+    async fn tick(&self, beacon_ticker: &mut Ticker, data_rate_limit: &mut Ticker, timeout_check_rate: &mut Ticker) {
+        let _ = select3(
+            self.send_data_tick(data_rate_limit),
             self.send_beacon(beacon_ticker),
             self.handle_timeouts(timeout_check_rate)
         ).await;
     }
 
-    async fn run_1(&self) {
-        let mut beacon_ticker =  Ticker::every(Duration::from_millis(100));
-        let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
-        let mut log_ticker = Ticker::every(Duration::from_secs(1));
-
-        loop {
-            match select4(
-                self.interface_control.wait_for_off_channel_request(),
-                self.bg_rx_queue.receive(),
-                self.debug_log(&mut log_ticker),
-                self.tick(&mut beacon_ticker,
-                          &mut timeout_check_rate),
-            ).await {
-                Either4::First(off_channel_request) => {
-                    off_channel_request.reject();
-                },
-                Either4::Second(buffer) => {self.handle_bg_rx(buffer).await;},
-                _ => {}
-            }
-        }
-    }
-    async fn run_2(&self) {
-        let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
-
-        loop {
-            self.send_data_tick(&mut data_rate_limit).await;
-        }
-    }
     async fn debug_log(&self, rate_ticker: &mut Ticker) {
         rate_ticker.next().await;
-        return;
 
         let client_manager = self.client_manager.lock().await;
 
@@ -454,7 +426,26 @@ impl InterfaceRunner for DsWiFiRunner<'_> {
     async fn run(&mut self) -> ! {
         info!("Runner Says Hi");
 
-        join(self.run_1(), self.run_2()).await;
-        unreachable!();
+        let mut beacon_ticker =  Ticker::every(Duration::from_millis(100));
+        let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
+        let mut log_ticker = Ticker::every(Duration::from_secs(1));
+        let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
+
+        loop {
+            match select4(
+                self.interface_control.wait_for_off_channel_request(),
+                self.bg_rx_queue.receive(),
+                self.debug_log(&mut log_ticker),
+                self.tick(&mut beacon_ticker,
+                          &mut data_rate_limit,
+                          &mut timeout_check_rate),
+            ).await {
+                Either4::First(off_channel_request) => {
+                    off_channel_request.reject();
+                },
+                Either4::Second(buffer) => {self.handle_bg_rx(buffer).await;},
+                _ => {}
+            }
+        }
     }
 }
