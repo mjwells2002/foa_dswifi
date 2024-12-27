@@ -297,7 +297,6 @@ impl Interface for DsWiFiInterface {
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_receiver(),
                 start_time: Instant::now(),
                 ack_rx_queue: shared_resources.ack_rx_queue.dyn_receiver(),
-                debug_mutex: Mutex::new(1),
             },
             DsWiFiInput {
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_sender(),

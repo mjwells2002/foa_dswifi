@@ -35,8 +35,7 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) bg_rx_queue: DynamicReceiver<'res, BorrowedBuffer<'res, 'res>>,
     pub(crate) client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
     pub(crate) ack_rx_queue: DynamicReceiver<'res, (MACAddress, Instant)>,
-    pub(crate) start_time: Instant,
-    pub(crate) debug_mutex: Mutex<NoopRawMutex, u16>,
+    pub(crate) start_time: Instant
 }
 
 impl DsWiFiRunner<'_> {
@@ -202,12 +201,6 @@ impl DsWiFiRunner<'_> {
 
     async fn send_beacon(&self,ticker: &mut Ticker) {
         ticker.next().await;
-        /*{
-            let client_manager = self.client_manager.lock();
-            if !client_manager.await.all_clients_mask.is_empty() {
-                return;
-            }
-        }*/
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
@@ -300,10 +293,6 @@ impl DsWiFiRunner<'_> {
     }
 
     async fn send_data_tick(&self, ticker: &mut Ticker) {
-        if let Err(_) = self.debug_mutex.try_lock() {
-            panic!("debug mutex is locked");
-            return;
-        };
         ticker.next().await;
         let mut mask = {
             let client_manager = self.client_manager.lock().await;
