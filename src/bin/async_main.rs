@@ -3,7 +3,7 @@
 
 use core::mem::MaybeUninit;
 use embassy_executor::Spawner;
-
+use embassy_futures::yield_now;
 use embassy_time::Timer;
 use esp_alloc::EspHeap;
 use esp_backtrace as _;
@@ -71,6 +71,6 @@ async fn main(spawner: Spawner) {
     spawner.spawn(wifi_task(runner)).unwrap();
 
     loop {
-        Timer::after_secs(1).await;
+        Timer::after_secs(1024).await;
     }
 }

@@ -13,9 +13,9 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, WiFiRate};
-use esp32_wifi_hal_rs::RxFilterBank::{ReceiverAddress, BSSID};
-use esp32_wifi_hal_rs::RxFilterInterface::Zero;
+use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, WiFiRate};
+use foa::esp32_wifi_hal_rs::RxFilterBank::{ReceiverAddress, BSSID};
+use foa::esp32_wifi_hal_rs::RxFilterInterface::Zero;
 use foa::interface;
 use foa::interface::{Interface, InterfaceInput, InterfaceRunner};
 use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint};
@@ -297,6 +297,7 @@ impl Interface for DsWiFiInterface {
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_receiver(),
                 start_time: Instant::now(),
                 ack_rx_queue: shared_resources.ack_rx_queue.dyn_receiver(),
+                debug_mutex: Mutex::new(1),
             },
             DsWiFiInput {
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_sender(),

@@ -562,7 +562,7 @@ dependencies = [
 [[package]]
 name = "esp32-wifi-hal-rs"
 version = "0.1.0"
-source = "git+https://github.com/esp32-open-mac/esp32-wifi-hal-rs.git#0270251ee7d3b290ba50581867643d51be44ca3a"
+source = "git+https://github.com/esp32-open-mac/esp32-wifi-hal-rs#9e9ee8ba643ff0e922966c7d0498d0f21efa7464"
 dependencies = [
  "atomic-waker",
  "bitfield-struct",
@@ -612,7 +612,6 @@ dependencies = [
  "esp-hal",
  "esp-hal-embassy",
  "esp-println",
- "esp32-wifi-hal-rs",
  "foa",
  "hex-literal",
  "ieee80211",
@@ -733,7 +732,7 @@ checksum = "b9e0384b61958566e926dc50660321d12159025e767c18e043daf26b70104c39"
 [[package]]
 name = "ieee80211"
 version = "0.5.0"
-source = "git+https://github.com/Frostie314159/ieee80211-rs#0fbcc77b24e6634a80b3f9751678820a0a224000"
+source = "git+https://github.com/Frostie314159/ieee80211-rs#d8e08a4f4a1bb2a13381d7bb57ba5ec074072856"
 dependencies = [
  "bitfield-struct",
  "const_soft_float",
@@ -1002,9 +1001,9 @@ dependencies = [
 
 [[package]]
 name = "quote"
-version = "1.0.37"
+version = "1.0.38"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "b5b9d34b8991d19d98081b46eacdd8eb58c6f2b201139f7c5f643cc155a633af"
+checksum = "0e4dccaaaf89514f546c693ddc140f729f958c247918a13380cccc6078391acc"
 dependencies = [
  "proc-macro2",
 ]
@@ -1073,9 +1072,9 @@ dependencies = [
 
 [[package]]
 name = "rustversion"
-version = "1.0.18"
+version = "1.0.19"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e819f2bc632f285be6d7cd36e25940d45b2391dd6d9b939e79de557f7014248"
+checksum = "f7c45b9784283f1b2e7fb61b42047c2fd678ef0960d4f6f1eba131594cc369d4"
 
 [[package]]
 name = "scopeguard"
@@ -1198,9 +1197,9 @@ dependencies = [
 
 [[package]]
 name = "syn"
-version = "2.0.91"
+version = "2.0.92"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "d53cbcb5a243bd33b7858b1d7f4aca2153490815872d86d955d6ea29f743c035"
+checksum = "70ae51629bf965c5c098cc9e87908a3df5301051a9e087d6f9bef5c9771ed126"
 dependencies = [
  "proc-macro2",
  "quote",

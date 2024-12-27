@@ -5,7 +5,6 @@ edition = "2021"
 
 
 [dependencies]
-esp32-wifi-hal-rs = { git = "https://github.com/esp32-open-mac/esp32-wifi-hal-rs.git", package = "esp32-wifi-hal-rs", features = ["log"] }
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa" }
 
 # ESP-HAL dependencies

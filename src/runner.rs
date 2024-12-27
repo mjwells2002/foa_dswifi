@@ -1,15 +1,15 @@
 use alloc::vec;
 use core::cmp::PartialEq;
 use core::future::Future;
-use core::intrinsics::black_box;
+use core::intrinsics::{black_box, unreachable};
 use core::marker::PhantomData;
+use embassy_futures::join::join;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::DynamicReceiver;
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
-use esp32_wifi_hal_rs::TxErrorBehaviour::Drop;
+use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::interface::InterfaceRunner;
 use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint, OffChannelRequest};
 use hex_literal::hex;
@@ -24,7 +24,7 @@ use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame, BeaconFrame, DeauthenticationFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
-use log::{info, trace, warn};
+use log::{debug, info, trace, warn};
 use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, MAX_CLIENTS};
 use crate::packets::{BeaconType, DSWiFiBeaconTag};
 
@@ -36,10 +36,11 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
     pub(crate) ack_rx_queue: DynamicReceiver<'res, (MACAddress, Instant)>,
     pub(crate) start_time: Instant,
+    pub(crate) debug_mutex: Mutex<NoopRawMutex, u16>,
 }
 
 impl DsWiFiRunner<'_> {
-    async fn handle_auth_frame(&mut self, auth: AuthenticationFrame<'_>) {
+    async fn handle_auth_frame(&self, auth: AuthenticationFrame<'_>) {
         info!("Got Auth Frame");
         if auth.body.authentication_algorithm_number != IEEE80211AuthenticationAlgorithmNumber::OpenSystem {
             info!("Got Auth Frame but it was not OpenSystem");
@@ -105,7 +106,7 @@ impl DsWiFiRunner<'_> {
 
     }
 
-    async fn handle_assoc_req_frame(&mut self, assoc: AssociationRequestFrame<'_>) {
+    async fn handle_assoc_req_frame(&self, assoc: AssociationRequestFrame<'_>) {
         info!("assoc request");
         let mut client_manager = self.client_manager.lock().await;
 
@@ -165,7 +166,7 @@ impl DsWiFiRunner<'_> {
         Timer::after_micros(500).await;
     }
 
-    async fn handle_deauth(&mut self, deauth: DeauthenticationFrame<'_>) {
+    async fn handle_deauth(&self, deauth: DeauthenticationFrame<'_>) {
         info!("Got deauth frame");
 
         let mut client_manager = self.client_manager.lock().await;
@@ -182,7 +183,7 @@ impl DsWiFiRunner<'_> {
         };
     }
     async fn handle_bg_rx(
-        &mut self,
+        &self,
         buffer: BorrowedBuffer<'_, '_>,
     ) {
         let _ = match_frames! {
@@ -201,7 +202,12 @@ impl DsWiFiRunner<'_> {
 
     async fn send_beacon(&self,ticker: &mut Ticker) {
         ticker.next().await;
-
+        /*{
+            let client_manager = self.client_manager.lock();
+            if !client_manager.await.all_clients_mask.is_empty() {
+                return;
+            }
+        }*/
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
@@ -294,8 +300,11 @@ impl DsWiFiRunner<'_> {
     }
 
     async fn send_data_tick(&self, ticker: &mut Ticker) {
+        if let Err(_) = self.debug_mutex.try_lock() {
+            panic!("debug mutex is locked");
+            return;
+        };
         ticker.next().await;
-
         let mut mask = {
             let client_manager = self.client_manager.lock().await;
 
@@ -316,7 +325,7 @@ impl DsWiFiRunner<'_> {
 
         let frame = DataFrame {
             header: DataFrameHeader {
-                subtype: DataFrameSubtype::CFPoll,
+                subtype: DataFrameSubtype::DataCFPoll,
                 fcf_flags: FCFFlags::new().with_from_ds(true),
                 duration: 240,
                 address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x00]),
@@ -340,8 +349,8 @@ impl DsWiFiRunner<'_> {
             warn!("ack received after timeout");
         }
 
-        let tx_pre = Instant::now();
-        let res = self.transmit_endpoint.transmit(
+
+        let tx_future = self.transmit_endpoint.transmit(
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
@@ -352,15 +361,13 @@ impl DsWiFiRunner<'_> {
                 interface_zero: false,
                 override_seq_num: true
             },
-        ).await;
-        //TODO: for some reason awaiting the send doesnt always wait for the frame to be sent it seems?
-        let tx = Instant::now();
-        if (tx - tx_pre).as_micros() < 200 {
-            let t  = Timer::after_micros(700); //frame is roughly 700us large
-            warn!("tx took {} micros", (tx - tx_pre).as_micros());
-            t.await;
-        }
-        let tx = Instant::now();
+        );
+        info!("sending data frame");
+        let tx_pre = Instant::now();
+        let mut res = tx_future.await;
+        let mut tx = Instant::now();
+
+        info!("tx took {} micros", (tx - tx_pre).as_micros());
 
         if res.is_err() {
             warn!("tx failed");
@@ -368,7 +375,7 @@ impl DsWiFiRunner<'_> {
         }
 
         //TODO: this probably isnt correct, correct value would be the determined using the beacon params for max frame tx time
-        let mut timeout = Timer::after_micros(500 * (mask.num_clients() as u64));
+        let mut timeout = Timer::after_micros(1000 * (mask.num_clients() as u64));
 
         while !mask.is_empty() {
             match select(&mut timeout,self.ack_rx_queue.receive()).await {
@@ -385,15 +392,45 @@ impl DsWiFiRunner<'_> {
             }
         }
     }
-    async fn tick(&self, beacon_ticker: &mut Ticker, data_rate_limit: &mut Ticker, timeout_check_rate: &mut Ticker) {
-        let _ = select3(
-            self.send_data_tick(data_rate_limit),
+    async fn tick(&self, beacon_ticker: &mut Ticker, timeout_check_rate: &mut Ticker) {
+        let _ = select(
             self.send_beacon(beacon_ticker),
             self.handle_timeouts(timeout_check_rate)
         ).await;
     }
+
+    async fn run_1(&self) {
+        let mut beacon_ticker =  Ticker::every(Duration::from_millis(100));
+        let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
+        let mut log_ticker = Ticker::every(Duration::from_secs(1));
+
+        loop {
+            match select4(
+                self.interface_control.wait_for_off_channel_request(),
+                self.bg_rx_queue.receive(),
+                self.debug_log(&mut log_ticker),
+                self.tick(&mut beacon_ticker,
+                          &mut timeout_check_rate),
+            ).await {
+                Either4::First(off_channel_request) => {
+                    off_channel_request.reject();
+                },
+                Either4::Second(buffer) => {self.handle_bg_rx(buffer).await;},
+                _ => {}
+            }
+        }
+    }
+    async fn run_2(&self) {
+        let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
+
+        loop {
+            self.send_data_tick(&mut data_rate_limit).await;
+        }
+    }
     async fn debug_log(&self, rate_ticker: &mut Ticker) {
         rate_ticker.next().await;
+        return;
+
         let client_manager = self.client_manager.lock().await;
 
         info!("=====================================");
@@ -417,28 +454,7 @@ impl InterfaceRunner for DsWiFiRunner<'_> {
     async fn run(&mut self) -> ! {
         info!("Runner Says Hi");
 
-        let mut beacon_ticker =  Ticker::every(Duration::from_millis(100));
-        let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
-        let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
-        let mut log_ticker = Ticker::every(Duration::from_secs(1));
-
-        loop {
-            match select4(
-                self.interface_control.wait_for_off_channel_request(),
-                self.bg_rx_queue.receive(),
-                self.debug_log(&mut log_ticker),
-                self.tick(&mut beacon_ticker,
-                          &mut data_rate_limit,
-                          &mut timeout_check_rate),
-                ).await {
-                Either4::First(off_channel_request) => {
-                    off_channel_request.reject();
-                },
-                Either4::Second(buffer) => {self.handle_bg_rx(buffer).await;},
-                _ => {}
-            }
-
-
-        }
+        join(self.run_1(), self.run_2()).await;
+        unreachable!();
     }
 }
