@@ -389,7 +389,7 @@ impl DsWiFiRunner<'_> {
 
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
-        let written = buffer.pwrite_with(frame, 0, false).unwrap();
+        let written  = buffer.pwrite_with(frame, 0, false).unwrap();
 
         while self.ack_rx_queue.try_receive().is_ok() {
             warn!("ack received after timeout");

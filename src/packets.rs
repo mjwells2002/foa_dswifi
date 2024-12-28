@@ -1,7 +1,9 @@
-use bitflags::bitflags;
+use bitflags::{bitflags, Flags};
+use esp_hal::aes::Endianness::LittleEndian;
 use ieee80211::scroll;
-use ieee80211::scroll::ctx::{MeasureWith, TryIntoCtx};
-use ieee80211::scroll::{Endian, Pwrite};
+use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx, TryIntoCtx};
+use ieee80211::scroll::{Endian, Pread, Pwrite};
+use ieee80211::scroll::Endian::Little;
 use crate::DsWifiClientMask;
 
 pub struct DSWiFiBeaconTag<Payload: TryIntoCtx<()> + MeasureWith<()>> {
@@ -19,7 +21,7 @@ pub struct DSWiFiBeaconTag<Payload: TryIntoCtx<()> + MeasureWith<()>> {
 impl<Payload: TryIntoCtx<(),Error = scroll::Error> + MeasureWith<()>> TryIntoCtx<> for DSWiFiBeaconTag<Payload> {
     type Error = scroll::Error;
 
-    fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> where <Payload as TryIntoCtx>::Error: From<ieee80211::scroll::Error> {
+    fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> where <Payload as TryIntoCtx>::Error: From<scroll::Error> {
         let mut offset: usize = 0;
 
         buf.gwrite_with(self.oui_type, &mut offset, Endian::Little)?;
@@ -66,7 +68,7 @@ impl<Payload: MeasureWith<()> + TryIntoCtx> MeasureWith<()> for DSWiFiBeaconTag<
     }
 }
 
-impl<Payload: TryIntoCtx + core::convert::AsRef<[u8]>> Default for DSWiFiBeaconTag<Payload> {
+impl<Payload: TryIntoCtx + AsRef<[u8]>> Default for DSWiFiBeaconTag<Payload> {
     fn default() -> Self {
         Self {
             oui_type: 0,                        // should never change
@@ -90,6 +92,67 @@ pub enum BeaconType {
     MULTIBOOT = 0x0b,
 }
 
+pub struct ClientToHostDataFrame {
+    pub payload_size: u16,
+    pub flags: ClientToHostFlags,
+    //pub payload: Option<Payload>,
+    pub footer_seq_no: Option<u16>,
+}
+
+bitflags! {
+    #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+    pub struct ClientToHostFlags: u8 {
+        const RESERVED_0 = 1 << 0;
+        const RESERVED_1 = 1 << 1;
+        const RESERVED_2 = 1 << 2;
+        const HAS_FOOTER = 1 << 3;
+        const RESERVED_4 = 1 << 4;
+        const LENGTH_IS_BYTES = 1 << 5;
+        const RESERVED_6 = 1 << 6;
+        const RESERVED_7 = 1 << 7;
+    }
+}
+
+impl TryFromCtx<'_, ()> for ClientToHostDataFrame<> {
+    type Error = scroll::Error;
+
+    //TODO: how do i deal with the payload here
+    fn try_from_ctx(from: &[u8], _: ()) -> Result<(Self, usize), Self::Error> {
+        let mut offset = 0;
+
+        let payload_size_raw: u8 = from.gread_with(&mut offset, Little)?;
+        let mut payload_size = payload_size_raw as u16;
+        let flags_raw: u8 = from.gread_with(&mut offset, Little)?;
+        let flags = ClientToHostFlags::from_bits_truncate(flags_raw);
+        if !flags.contains(ClientToHostFlags::LENGTH_IS_BYTES) {
+            payload_size = payload_size * 2; //length is halfwords by default unless this bit is set
+        }
+        offset += payload_size as usize;
+        let footer = if flags.contains(ClientToHostFlags::HAS_FOOTER) {
+            let footer_raw: u16 = from.gread_with(&mut offset, Little)?;
+            Some(footer_raw)
+        } else { None };
+
+        let me = Self {
+            payload_size,
+            flags,
+            footer_seq_no: footer,
+        };
+
+        Ok((me,offset))
+    }
+}
+
+// The host to client data frame as I currently understand it.
+// The footer flag will be automatically set if a footer is provided.
+pub struct HostToClientDataFrame<Payload: TryIntoCtx<(), Error = scroll::Error> + MeasureWith<()>> {
+    pub us_per_client_reply: u16,
+    pub client_target_mask: DsWifiClientMask,
+    pub flags: HostToClientFlags,
+    pub payload: Option<Payload>,
+    pub footer: Option<HostToClientFooter>,
+}
+
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
     pub struct HostToClientFlags: u8 {
@@ -109,18 +172,7 @@ impl Default for HostToClientFlags {
         Self::from_bits_truncate(0)
     }
 }
-
-// The host to client data frame as I currently understand it.
-// The footer flag will be automatically set if a footer is provided.
-pub struct HostToClientDataFrame<Payload: TryIntoCtx<(), Error = scroll::Error> + MeasureWith<()>> {
-    pub us_per_client_reply: u16,
-    pub client_target_mask: DsWifiClientMask,
-    pub flags: HostToClientFlags,
-    pub payload: Option<Payload>,
-    pub footer: Option<HostToClientFooter>,
-}
-
-impl<Payload: MeasureWith<()> + ieee80211::scroll::ctx::TryIntoCtx<(), Error = ieee80211::scroll::Error>> MeasureWith<()> for HostToClientDataFrame<Payload> {
+impl<Payload: MeasureWith<()> + TryIntoCtx<(), Error = scroll::Error>> MeasureWith<()> for HostToClientDataFrame<Payload> {
     fn measure_with(&self, ctx: &()) -> usize {
         let mut frame_size = 0;
         //order is same as write for readability
@@ -140,7 +192,7 @@ impl<Payload: MeasureWith<()> + ieee80211::scroll::ctx::TryIntoCtx<(), Error = i
         frame_size
     }
 }
-impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<()> + core::convert::AsRef<[u8]>> TryIntoCtx<()> for HostToClientDataFrame<Payload> {
+impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<()> + AsRef<[u8]>> TryIntoCtx<()> for HostToClientDataFrame<Payload> {
     type Error = scroll::Error;
 
     fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {

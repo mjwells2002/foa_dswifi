@@ -22,14 +22,15 @@ use foa::interface::{Interface, InterfaceInput, InterfaceRunner};
 use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint};
 use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FrameType, ManagementFrameSubtype, SequenceControl};
 use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
-use ieee80211::data_frame::DataFrame;
+use ieee80211::data_frame::{DataFrame, DataFrameReadPayload};
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{BeaconFrame, ManagementFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::BeaconBody;
+use ieee80211::scroll::ctx::{TryFromCtx, TryIntoCtx};
 use ieee80211::scroll::Pwrite;
 use log::{error, info, warn};
-
+use crate::packets::{ClientToHostDataFrame};
 use crate::runner::DsWiFiRunner;
 
 pub struct DsWiFiInterface;
@@ -199,7 +200,14 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                 match data {
                     DataFrameSubtype::DataCFAck => {
                         //TODO: parse frame and extract the app payload (if present) and forward it to control layer
-
+                        let frame = generic_frame.parse_to_typed::<DataFrame>().unwrap().unwrap();
+                        match frame.payload.unwrap() {
+                            DataFrameReadPayload::Single(data) => {
+                                let (c2h_frame,size) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
+                                info!("got c2h data frame: payload size {}",c2h_frame.payload_size);
+                            }
+                            DataFrameReadPayload::AMSDU(_) => {}
+                        }
                         if let Err(_) = self.ack_rx_queue.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
                             error!("Failed to send ack to runner");
                         }
