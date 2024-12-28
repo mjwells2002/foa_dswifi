@@ -26,7 +26,7 @@ use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, B
 use ieee80211::scroll::Pwrite;
 use log::{debug, info, trace, warn};
 use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, MAX_CLIENTS};
-use crate::packets::{BeaconType, DSWiFiBeaconTag};
+use crate::packets::{BeaconType, DSWiFiBeaconTag, HostToClientDataFrame};
 use crate::pictochat_packets::{PictochatBeacon, PictochatChatroom};
 
 pub struct DsWiFiRunner<'res> {
@@ -315,13 +315,7 @@ impl DsWiFiRunner<'_> {
              client_manager.all_clients_mask
         };
 
-        let mask_le_bytes = mask.to_le_bytes();
-        let mut idle = hex!("E6 03 02 00 34 1C 05 00 68 00 75 85 DA 87 38 90 5A 0C FC 79 1E 00 DC A9 24 52 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 00 04 00 02 00");
-        //let payload = [0xe6,0x03,mask[0],mask[1],0x00,0x00u8];
-        idle[2] = mask_le_bytes[0];
-        idle[3] = mask_le_bytes[1];
-
-        let ack = hex!("a9000000");
+        let max_client_ack_wait_micros = 998;
 
         let frame = DataFrame {
             header: DataFrameHeader {
@@ -336,9 +330,14 @@ impl DsWiFiRunner<'_> {
                 qos: None,
                 ht_control: None,
             },
-            payload: Some(idle.as_slice()),
+            payload: Some(HostToClientDataFrame::<&[u8]> {
+                us_per_client_reply: max_client_ack_wait_micros,
+                client_target_mask: mask,
+                flags: Default::default(),
+                payload: None,
+                footer: None,
+            }),
             _phantom: Default::default(),
-
         };
 
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
@@ -374,8 +373,7 @@ impl DsWiFiRunner<'_> {
             return;
         }
 
-        //TODO: this probably isnt correct, correct value would be the determined using the beacon params for max frame tx time
-        let mut timeout = Timer::after_micros(1000 * (mask.num_clients() as u64));
+        let mut timeout = Timer::after_micros((max_client_ack_wait_micros * (mask.num_clients() as u16)) as u64);
 
         while !mask.is_empty() {
             match select(&mut timeout,self.ack_rx_queue.receive()).await {

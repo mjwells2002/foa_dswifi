@@ -112,7 +112,7 @@ impl Default for HostToClientFlags {
 
 // The host to client data frame as I currently understand it.
 // The footer flag will be automatically set if a footer is provided.
-pub struct HostToClientDataFrame<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<()>> {
+pub struct HostToClientDataFrame<Payload: TryIntoCtx<(), Error = scroll::Error> + MeasureWith<()>> {
     pub us_per_client_reply: u16,
     pub client_target_mask: DsWifiClientMask,
     pub flags: HostToClientFlags,
@@ -120,7 +120,7 @@ pub struct HostToClientDataFrame<Payload: TryIntoCtx<Error = scroll::Error> + Me
     pub footer: Option<HostToClientFooter>,
 }
 
-impl<Payload: MeasureWith<()> + ieee80211::scroll::ctx::TryIntoCtx<Error = ieee80211::scroll::Error>> MeasureWith<()> for HostToClientDataFrame<Payload> {
+impl<Payload: MeasureWith<()> + ieee80211::scroll::ctx::TryIntoCtx<(), Error = ieee80211::scroll::Error>> MeasureWith<()> for HostToClientDataFrame<Payload> {
     fn measure_with(&self, ctx: &()) -> usize {
         let mut frame_size = 0;
         //order is same as write for readability
@@ -140,10 +140,10 @@ impl<Payload: MeasureWith<()> + ieee80211::scroll::ctx::TryIntoCtx<Error = ieee8
         frame_size
     }
 }
-impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<bool> + core::convert::AsRef<[u8]>> TryIntoCtx<bool> for HostToClientDataFrame<Payload> {
+impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<()> + core::convert::AsRef<[u8]>> TryIntoCtx<()> for HostToClientDataFrame<Payload> {
     type Error = scroll::Error;
 
-    fn try_into_ctx(self, buf: &mut [u8], ctx: bool) -> Result<usize, Self::Error> {
+    fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {
         let mut offset: usize = 0;
         buf.gwrite_with(self.us_per_client_reply, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.client_target_mask, &mut offset, Endian::Little)?;
