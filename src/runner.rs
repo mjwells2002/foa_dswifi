@@ -209,6 +209,10 @@ impl DsWiFiRunner<'_> {
             let client_mananger = self.client_manager.lock().await;
 
             DSWiFiBeaconTag {
+                oui_type: 0,
+                stepping_offset: [0x0a, 0x00],
+                lcd_video_sync: [0x00, 0x00],
+                fixed_id: [0x00, 0x00, 0x00, 0x0a],
                 game_id: [0x00, 0x00, 0x00, 0x00],
                 beacon_type: BeaconType::MULTICART,
                 cmd_data_size: 0x00c0,
@@ -219,7 +223,6 @@ impl DsWiFiRunner<'_> {
                     client_count: client_mananger.all_clients_mask.num_clients() + 1,
                     ..Default::default()
                 }),
-                ..Default::default()
             }
         };
 

@@ -20,13 +20,13 @@ impl Default for PictochatBeacon {
     }
 }
 
-impl TryIntoCtx<bool> for PictochatBeacon {
+impl TryIntoCtx<()> for PictochatBeacon {
     type Error = scroll::Error;
 
-    fn try_into_ctx(self, buf: &mut [u8], ctx: bool) -> Result<usize, Self::Error> {
+    fn try_into_ctx(self, buf: &mut [u8], _: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
         buf.gwrite_with(self.header, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.chatroom, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.chatroom as u8, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.client_count, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.footer, &mut offset, Endian::Little)?;
 
@@ -34,8 +34,8 @@ impl TryIntoCtx<bool> for PictochatBeacon {
     }
 }
 
-impl MeasureWith<bool> for PictochatBeacon {
-    fn measure_with(&self, _: &bool) -> usize {
+impl MeasureWith<()> for PictochatBeacon {
+    fn measure_with(&self, _: &()) -> usize {
         let mut frame_size = 0;
 
         frame_size += 4; //header

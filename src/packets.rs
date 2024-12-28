@@ -4,8 +4,7 @@ use ieee80211::scroll::ctx::{MeasureWith, TryIntoCtx};
 use ieee80211::scroll::{Endian, Pwrite};
 use crate::DsWifiClientMask;
 
-#[repr(C, packed(1))]
-pub struct DSWiFiBeaconTag<Payload: TryIntoCtx<bool> + MeasureWith<bool>> {
+pub struct DSWiFiBeaconTag<Payload: TryIntoCtx<()> + MeasureWith<()>> {
     pub oui_type: u8,
     pub stepping_offset: [u8; 2],
     pub lcd_video_sync: [u8; 2],
@@ -17,10 +16,10 @@ pub struct DSWiFiBeaconTag<Payload: TryIntoCtx<bool> + MeasureWith<bool>> {
     pub reply_data_size: u16,
     pub payload: Option<Payload>,
 }
-impl<Payload: TryIntoCtx<bool> + MeasureWith<bool>> TryIntoCtx<> for DSWiFiBeaconTag<Payload> {
+impl<Payload: TryIntoCtx<(),Error = scroll::Error> + MeasureWith<()>> TryIntoCtx<> for DSWiFiBeaconTag<Payload> {
     type Error = scroll::Error;
 
-    fn try_into_ctx(self, buf: &mut [u8], ctx: bool) -> Result<usize, Self::Error> {
+    fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> where <Payload as TryIntoCtx>::Error: From<ieee80211::scroll::Error> {
         let mut offset: usize = 0;
 
         buf.gwrite_with(self.oui_type, &mut offset, Endian::Little)?;
@@ -34,19 +33,19 @@ impl<Payload: TryIntoCtx<bool> + MeasureWith<bool>> TryIntoCtx<> for DSWiFiBeaco
         } else {
             buf.gwrite_with(0u8, &mut offset, Endian::Little)?;
         }
-        buf.gwrite_with(self.beacon_type, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.beacon_type as u8, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.cmd_data_size, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.reply_data_size, &mut offset, Endian::Little)?;
-        if let Some(payload) = &self.payload {
-            buf.gwrite(self.payload, &mut offset)?;
+        if let Some(payload) = self.payload {
+            buf.gwrite(payload, &mut offset)?;
         }
 
         Ok(offset)
     }
 }
 
-impl<Payload: MeasureWith<bool>> MeasureWith<bool> for DSWiFiBeaconTag<Payload> {
-    fn measure_with(&self, ctx: &bool) -> usize {
+impl<Payload: MeasureWith<()> + TryIntoCtx> MeasureWith<()> for DSWiFiBeaconTag<Payload> {
+    fn measure_with(&self, ctx: &()) -> usize {
         let mut frame_size = 0;
 
         frame_size += 1; //oui_type
@@ -67,7 +66,7 @@ impl<Payload: MeasureWith<bool>> MeasureWith<bool> for DSWiFiBeaconTag<Payload> 
     }
 }
 
-impl<Payload> Default for DSWiFiBeaconTag<Payload> {
+impl<Payload: TryIntoCtx + core::convert::AsRef<[u8]>> Default for DSWiFiBeaconTag<Payload> {
     fn default() -> Self {
         Self {
             oui_type: 0,                        // should never change
@@ -113,7 +112,7 @@ impl Default for HostToClientFlags {
 
 // The host to client data frame as I currently understand it.
 // The footer flag will be automatically set if a footer is provided.
-pub struct HostToClientDataFrame<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<bool>> {
+pub struct HostToClientDataFrame<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<()>> {
     pub us_per_client_reply: u16,
     pub client_target_mask: DsWifiClientMask,
     pub flags: HostToClientFlags,
@@ -121,8 +120,8 @@ pub struct HostToClientDataFrame<Payload: TryIntoCtx<Error = scroll::Error> + Me
     pub footer: Option<HostToClientFooter>,
 }
 
-impl<Payload: MeasureWith<bool>> MeasureWith<bool> for HostToClientDataFrame<Payload> {
-    fn measure_with(&self, ctx: &bool) -> usize {
+impl<Payload: MeasureWith<()> + ieee80211::scroll::ctx::TryIntoCtx<Error = ieee80211::scroll::Error>> MeasureWith<()> for HostToClientDataFrame<Payload> {
+    fn measure_with(&self, ctx: &()) -> usize {
         let mut frame_size = 0;
         //order is same as write for readability
 
@@ -141,7 +140,7 @@ impl<Payload: MeasureWith<bool>> MeasureWith<bool> for HostToClientDataFrame<Pay
         frame_size
     }
 }
-impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<bool>> TryIntoCtx<bool> for HostToClientDataFrame<Payload> {
+impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<bool> + core::convert::AsRef<[u8]>> TryIntoCtx<bool> for HostToClientDataFrame<Payload> {
     type Error = scroll::Error;
 
     fn try_into_ctx(self, buf: &mut [u8], ctx: bool) -> Result<usize, Self::Error> {
@@ -157,8 +156,8 @@ impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<bool>> TryIntoCtx<
         if self.footer.is_some() {
             flags.set(HostToClientFlags::HAS_FOOTER, true);
         }
-        buf.gwrite_with(flags, &mut offset, Endian::Little)?;
-        if let Some(payload) = &self.payload {
+        buf.gwrite_with(flags.bits(), &mut offset, Endian::Little)?;
+        if let Some(payload) = self.payload {
             buf.gwrite(payload, &mut offset)?;
         }
         if let Some(footer) = &self.footer {
