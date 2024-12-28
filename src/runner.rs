@@ -327,12 +327,9 @@ impl DsWiFiRunner<'_> {
     async fn send_deauth(&self, target: &[u8; 6]) {
         //todo: this
     }
+
     async fn handle_timeouts(&self, ticker: &mut Ticker) {
         ticker.next().await;
-        self.handle_timeouts_inner().await;
-    }
-
-    async fn handle_timeouts_inner(&self) {
         let mut timed_clients: [Option<AssociationID>; MAX_CLIENTS] = [None; MAX_CLIENTS];
         let mut i = 0;
         let mut client_manager = self.client_manager.lock().await;
