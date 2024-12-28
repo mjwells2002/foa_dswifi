@@ -602,6 +602,7 @@ dependencies = [
 name = "foa_dswifi"
 version = "0.1.0"
 dependencies = [
+ "bitflags",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync",

@@ -4,6 +4,7 @@ extern crate alloc;
 
 mod runner;
 mod packets;
+mod pictochat_packets;
 
 use core::future::Future;
 use core::marker::PhantomData;

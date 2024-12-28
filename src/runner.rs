@@ -27,6 +27,7 @@ use ieee80211::scroll::Pwrite;
 use log::{debug, info, trace, warn};
 use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, MAX_CLIENTS};
 use crate::packets::{BeaconType, DSWiFiBeaconTag};
+use crate::pictochat_packets::{PictochatBeacon, PictochatChatroom};
 
 pub struct DsWiFiRunner<'res> {
     pub(crate) transmit_endpoint: LMacTransmitEndpoint<'res>,
@@ -204,16 +205,23 @@ impl DsWiFiRunner<'_> {
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
-        let mut beacon = DSWiFiBeaconTag {
-            game_id: [0x00, 0x00, 0x00, 0x00],
-            beacon_type: BeaconType::MULTICART,
-            cmd_data_size: 0x00c0,
-            reply_data_size: 0x00c0,
-            stream_code: 0x0f0f, //todo: increment this like a real ds
-            ..Default::default()
+        let beacon = {
+            let client_mananger = self.client_manager.lock().await;
+
+            DSWiFiBeaconTag {
+                game_id: [0x00, 0x00, 0x00, 0x00],
+                beacon_type: BeaconType::MULTICART,
+                cmd_data_size: 0x00c0,
+                reply_data_size: 0x00c0,
+                stream_code: 0x0f0f, //todo: increment this like a real ds
+                payload: Some(PictochatBeacon {
+                    chatroom: PictochatChatroom::B,
+                    client_count: client_mananger.all_clients_mask.num_clients() + 1,
+                    ..Default::default()
+                }),
+                ..Default::default()
+            }
         };
-        let beacon_payload = Some(vec![0x48, 0x23, 0x11, 0x0a, 0x01, 0x01, 0x04, 0x00]);
-        let beacon_vec = beacon.to_bytes(beacon_payload);
 
         let frame = BeaconFrame {
             header: ManagementFrameHeader {
@@ -240,7 +248,7 @@ impl DsWiFiRunner<'_> {
                         slice: &[00u8,02,00,00],
                         _phantom: Default::default(),
                     },
-                    VendorSpecificElement::new_prefixed(&[0x00u8,0x09,0xbf],beacon_vec.as_slice())
+                    VendorSpecificElement::new_prefixed(&[0x00u8,0x09,0xbf],beacon)
                 },
                 _phantom: PhantomData
             },
@@ -316,7 +324,7 @@ impl DsWiFiRunner<'_> {
             header: DataFrameHeader {
                 subtype: DataFrameSubtype::DataCFPoll,
                 fcf_flags: FCFFlags::new().with_from_ds(true),
-                duration: 240,
+                duration: 0,
                 address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x00]),
                 address_2: MACAddress::from(self.mac_address),
                 address_3: MACAddress::from(self.mac_address),
