@@ -12,7 +12,7 @@ use foa::{bg_task::SingleInterfaceRunner, FoAStackResources};
 use log::{info, LevelFilter};
 use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiSharedResources};
 
-const HEAP_SIZE: usize = 1 * 1024;
+/*const HEAP_SIZE: usize = 1 * 1024;
 
 fn init_heap() {
     static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
@@ -26,7 +26,7 @@ fn init_heap() {
 
     }
 }
-
+*/
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
         static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
@@ -46,7 +46,7 @@ async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
     esp_println::logger::init_logger_from_env();
 
-    init_heap();
+    //init_heap();
 
 
     info!("Hello, world!");
