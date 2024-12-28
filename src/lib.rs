@@ -190,7 +190,6 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
         };
         match generic_frame.frame_control_field().frame_type() {
             FrameType::Management(_) => {
-                info!("Management Frame");
                 if let Err(_) = self.bg_rx_queue.try_send(borrowed_buffer) {
                     // it will probably retry, this should be non-fatal
                     error!("Failed to send to bg_rx_queue");
@@ -220,29 +219,6 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                 warn!("Unknown Frame");
             }
         }
-
-
-        return;
-        match generic_frame.frame_control_field().frame_type() {
-            FrameType::Management(_) => {
-                info!("Management Frame");
-                if let Err(_) = self.bg_rx_queue.try_send(borrowed_buffer) {
-                    info!("Failed to send to bg_rx_queue");
-                };
-            }
-            FrameType::Control(_) => {
-                todo!()
-            }
-            FrameType::Data(data) => {
-
-
-                //info!("Data Frame {:X?}", generic_frame.address_2());
-            }
-            FrameType::Unknown(_) => {
-                info!("Unknown Frame");
-            }
-        }
-
     }
 }
 

@@ -39,9 +39,63 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) start_time: Instant
 }
 
+/* ChatGPT wrote these 2 functions, it may be wrong */
+/// Calculates the air duration (in microseconds) of a Wi-Fi frame.
+/// `frame_size` is in bytes (total payload size, including MAC overhead).
+pub fn calculate_air_duration(rate: WiFiRate, frame_size: usize) -> u16 {
+    match rate {
+        WiFiRate::PhyRate1ML => {
+            // 1 Mbps long preamble timings:
+            // Long preamble = 192 microseconds, Header = 48 bits (48μs at 1 Mbps)
+            let preamble = 192; // 192 μs
+            let header = 48; // 48 μs
+            let payload_time = calculate_payload_time(1, frame_size); // rate = 1 Mbps
+            preamble + header + payload_time
+        }
+        WiFiRate::PhyRate2ML => {
+            // 2 Mbps long preamble timings:
+            // Long preamble = 192 microseconds, Header = 24 bits (12μs at 2 Mbps)
+            let preamble = 192; // 192 μs
+            let header = 24; // 24 μs
+            let payload_time = calculate_payload_time(2, frame_size); // rate = 2 Mbps
+            preamble + header + payload_time
+        }
+        WiFiRate::PhyRate2MS => {
+            // 2 Mbps short preamble timings:
+            // Short preamble = 96 microseconds, Header = 24 bits (12μs at 2 Mbps)
+            let preamble = 96; // 96 μs
+            let header = 24; // 24 μs
+            let payload_time = calculate_payload_time(2, frame_size); // rate = 2 Mbps
+            preamble + header + payload_time
+        }
+        _ => {
+            todo!("unsupported rate")
+        }
+    }
+}
+
+fn calculate_payload_time(rate_mbps: u16, frame_size: usize) -> u16 {
+    // Convert frame size from bytes to bits (1 byte = 8 bits)
+    let frame_bits = frame_size as u16 * 8;
+    // Divide frame bits by rate (Mbps) to get time in microseconds
+    (frame_bits + (rate_mbps - 1)) / rate_mbps // Ceiling division
+}
+/* I hope it's not though */
+
+fn ds_tx_params_for_dataframe(rate: WiFiRate, frame_size: usize, tx_error_behaviour: TxErrorBehaviour) -> TxParameters {
+    let air_duration = calculate_air_duration(rate, frame_size);
+    TxParameters {
+        rate,
+        interface_zero: false,
+        interface_one: false,
+        wait_for_ack: false,
+        duration: air_duration,
+        override_seq_num: true,
+        tx_error_behaviour,
+    }
+}
 impl DsWiFiRunner<'_> {
     async fn handle_auth_frame(&self, auth: AuthenticationFrame<'_>) {
-        info!("Got Auth Frame");
         if auth.body.authentication_algorithm_number != IEEE80211AuthenticationAlgorithmNumber::OpenSystem {
             info!("Got Auth Frame but it was not OpenSystem");
             return;
@@ -145,8 +199,6 @@ impl DsWiFiRunner<'_> {
 
         let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-        info!("assoc response header: {:X?}",&buffer[0..4]);
-
         let _ = self.transmit_endpoint.transmit(
             &mut buffer[..written],
             &TxParameters {
@@ -167,12 +219,10 @@ impl DsWiFiRunner<'_> {
     }
 
     async fn handle_deauth(&self, deauth: DeauthenticationFrame<'_>) {
-        info!("Got deauth frame");
-
         let mut client_manager = self.client_manager.lock().await;
 
         let aid = client_manager.get_client(deauth.header.transmitter_address).unwrap().association_id;
-        info!("deauthing client with aid {}", aid.aid());
+        info!("disconnecting client with aid {} due to deauth frame", aid.aid());
 
         client_manager.remove_client(aid);
     }
@@ -348,32 +398,23 @@ impl DsWiFiRunner<'_> {
             warn!("ack received after timeout");
         }
 
-
-        let tx_future = self.transmit_endpoint.transmit(
-            &mut buffer[..written],
-            &TxParameters {
-                rate: WiFiRate::PhyRate2MS,
-                wait_for_ack: false,
-                duration: 780,
-                tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
-                interface_one: false,
-                interface_zero: false,
-                override_seq_num: true
-            },
-        );
-        info!("sending data frame");
         let tx_pre = Instant::now();
-        let mut res = tx_future.await;
-        let mut tx = Instant::now();
+        let res = self.transmit_endpoint.transmit(
+            &mut buffer[..written],
+            &ds_tx_params_for_dataframe(WiFiRate::PhyRate2MS, written, TxErrorBehaviour::RetryUntil(4)),
+        ).await;
+        let tx = Instant::now();
 
-        info!("tx took {} micros", (tx - tx_pre).as_micros());
+        debug!("tx took {} micros", (tx - tx_pre).as_micros());
 
         if res.is_err() {
             warn!("tx failed");
             return;
         }
 
-        let mut timeout = Timer::after_micros((max_client_ack_wait_micros * (mask.num_clients() as u16)) as u64);
+        //TODO: this still isnt right, but it works most of the time
+        //180us is the average observed queue latency from rx to processing
+        let mut timeout = Timer::after_micros(((max_client_ack_wait_micros + 180) * (mask.num_clients() as u16)) as u64);
 
         while !mask.is_empty() {
             match select(&mut timeout,self.ack_rx_queue.receive()).await {
@@ -382,7 +423,7 @@ impl DsWiFiRunner<'_> {
                     let mut client_manager = self.client_manager.lock().await;
                     if let Some(client) = client_manager.get_client_mut(ack_from) {
                         let ack = Instant::now();
-                        info!("ack latency: {} / {}", (ack - tx).as_micros(), (ack - ack_enqueue_time).as_micros());
+                        debug!("ack latency: {} / {}", (ack - tx).as_micros(), (ack - ack_enqueue_time).as_micros());
                         client.last_heard_from = Instant::now();
                         mask.mask_subtract(client.association_id.get_mask_bits());
                     }
