@@ -246,7 +246,10 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                             DataFrameReadPayload::Single(data) => {
                                 let (c2h_frame,size) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
                                 self.send_ack().await;
-                                info!("got c2h data frame: pay load size {}",c2h_frame.payload_size);
+                                if c2h_frame.payload_size > 0 {
+                                    info!("got c2h data frame: payload size {}",c2h_frame.payload_size);
+                                    info!("{:X?}", c2h_frame.payload.unwrap());
+                                }
                             }
                             DataFrameReadPayload::AMSDU(_) => {}
                         }
@@ -255,10 +258,12 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                         }
                     }
                     DataFrameSubtype::CFAck => {
+
                         if let Err(_) = self.ack_rx_queue.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
                             error!("Failed to send ack to runner");
                         }
                         self.send_ack().await;
+
                     }
 
                     _ => {

@@ -137,16 +137,15 @@ impl TryFromCtx<'_, ()> for ClientToHostDataFrame<> {
                 local_payload_size = 0;
             }
             if local_payload_size > 0 && local_payload_size < 300 {
-                payload.copy_from_slice(&from[offset..offset+local_payload_size as usize]);
+                payload[..local_payload_size].copy_from_slice(&from[offset..offset+local_payload_size]);
             }
+            offset += local_payload_size;
             if local_payload_size == 0 {
                 None
             } else {
                 Some((payload,payload_size))
             }
         };
-
-        offset += payload_size as usize;
         let footer = if flags.contains(ClientToHostFlags::HAS_FOOTER) {
             let footer_raw: u16 = from.gread_with(&mut offset, Little)?;
             Some(footer_raw)
