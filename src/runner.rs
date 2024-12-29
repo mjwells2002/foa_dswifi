@@ -1,4 +1,3 @@
-use alloc::vec;
 use core::cmp::PartialEq;
 use core::future::Future;
 use core::intrinsics::{black_box, unreachable};
@@ -8,6 +7,7 @@ use embassy_futures::select::{select, select3, select4, Either, Either3, Either4
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::DynamicReceiver;
 use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::interface::InterfaceRunner;
@@ -25,7 +25,8 @@ use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, A
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
 use log::{debug, info, trace, warn};
-use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, MAX_CLIENTS};
+use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, MAX_CLIENTS};
+use crate::DsWiFiControlEvent::FrameRequired;
 use crate::packets::{BeaconType, DSWiFiBeaconTag, HostToClientDataFrame};
 use crate::pictochat_packets::{PictochatBeacon, PictochatChatroom};
 
@@ -36,7 +37,11 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) bg_rx_queue: DynamicReceiver<'res, BorrowedBuffer<'res, 'res>>,
     pub(crate) client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
     pub(crate) ack_rx_queue: DynamicReceiver<'res, (MACAddress, Instant)>,
-    pub(crate) start_time: Instant
+    pub(crate) start_time: Instant,
+    pub(crate) data_tx_mutex: &'res Mutex<NoopRawMutex, ([u8;300], u16)>,
+    pub(crate) data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
+    pub(crate) data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>
+
 }
 
 /* ChatGPT wrote these 2 functions, it may be wrong */
@@ -352,6 +357,15 @@ impl DsWiFiRunner<'_> {
 
     async fn send_data_tick(&self, ticker: &mut Ticker) {
         ticker.next().await;
+
+        self.data_tx_signal.signal(FrameRequired);
+
+        self.data_tx_signal_2.wait().await;
+        self.data_tx_signal_2.reset();
+
+        let payload_guard = self.data_tx_mutex.lock().await;
+        let (payload,size) = *payload_guard;
+
         let mut mask = {
             let client_manager = self.client_manager.lock().await;
 
@@ -381,7 +395,7 @@ impl DsWiFiRunner<'_> {
                 us_per_client_reply: max_client_ack_wait_micros,
                 client_target_mask: mask,
                 flags: Default::default(),
-                payload: None,
+                payload: if size != 0 { Some(&payload[..size as usize]) } else { None },
                 footer: None,
             }),
             _phantom: Default::default(),

@@ -1,8 +1,11 @@
 #![no_std]
 #![no_main]
+#![feature(future_join)]
 
+use core::future::join;
 use core::mem::MaybeUninit;
 use embassy_executor::Spawner;
+use embassy_futures::join::join;
 use embassy_futures::yield_now;
 use embassy_time::Timer;
 use esp_alloc::EspHeap;
@@ -11,7 +14,7 @@ use esp_hal::{rng::Rng, timer::timg::TimerGroup};
 use foa::{bg_task::SingleInterfaceRunner, FoAStackResources};
 use log::{info, LevelFilter};
 use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiSharedResources};
-
+use foa_dswifi::DsWiFiControlEvent::FrameGenerated;
 /*const HEAP_SIZE: usize = 1 * 1024;
 
 fn init_heap() {
@@ -59,7 +62,7 @@ async fn main(spawner: Spawner) {
         FoAStackResources::new()
     );
 
-    let (_ds_control, runner) = foa::new_with_single_interface::<DsWiFiInterface>(
+    let (ds_control, runner) = foa::new_with_single_interface::<DsWiFiInterface>(
         stack_resources,
         peripherals.WIFI,
         peripherals.RADIO_CLK,
@@ -70,7 +73,16 @@ async fn main(spawner: Spawner) {
     info!("Spawning Wifi Task");
     spawner.spawn(wifi_task(runner)).unwrap();
 
-    loop {
-        Timer::after_secs(1024).await;
-    }
+    join(async {
+        loop {
+            ds_control.data_tx_signal.wait().await;
+            ds_control.data_tx_signal.reset();
+            ds_control.data_tx_signal_2.signal(FrameGenerated);
+        }
+    }, async {
+        loop {
+            let (aaa,bbb) = ds_control.data_rx.receive().await;
+            info!("{:X?}", aaa);
+        }
+    }).await;
 }

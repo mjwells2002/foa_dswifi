@@ -1,6 +1,5 @@
 #![no_std]
 #![feature(core_intrinsics)]
-extern crate alloc;
 
 mod runner;
 mod packets;
@@ -13,6 +12,7 @@ use core::sync::atomic::AtomicUsize;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
+use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::esp32_wifi_hal_rs::RxFilterBank::{ReceiverAddress, BSSID};
@@ -22,14 +22,14 @@ use foa::interface::{Interface, InterfaceInput, InterfaceRunner};
 use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint};
 use hex_literal::hex;
 use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FCFFlags, FrameType, ManagementFrameSubtype, SequenceControl};
-use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
+use ieee80211::{element_chain, match_frames, scroll, supported_rates, GenericFrame};
 use ieee80211::data_frame::{DataFrame, DataFrameReadPayload};
 use ieee80211::data_frame::header::DataFrameHeader;
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{BeaconFrame, ManagementFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::BeaconBody;
-use ieee80211::scroll::ctx::{TryFromCtx, TryIntoCtx};
+use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx, TryIntoCtx};
 use ieee80211::scroll::Pwrite;
 use log::{error, info, warn};
 use crate::packets::{ClientToHostDataFrame};
@@ -162,6 +162,11 @@ pub struct DsWiFiSharedResources<'res> {
 
     bg_rx_queue: Channel<NoopRawMutex, BorrowedBuffer<'res, 'res>, 4>,
     ack_rx_queue: Channel<NoopRawMutex, (MACAddress, Instant), 4>,
+
+    data_tx_mutex: Mutex<NoopRawMutex,([u8;300],u16)>,
+    data_queue: Channel<NoopRawMutex, ([u8;300],u16), 4>,
+    data_tx_signal: Signal<NoopRawMutex, DsWiFiControlEvent>,
+    data_tx_signal_2: Signal<NoopRawMutex, DsWiFiControlEvent>,
 }
 
 impl Default for DsWiFiSharedResources<'_> {
@@ -173,18 +178,33 @@ impl Default for DsWiFiSharedResources<'_> {
             }),
             bg_rx_queue: Channel::new(),
             ack_rx_queue: Channel::new(),
+            data_tx_mutex: Mutex::from(
+                ([0u8;300],0)),
+            data_queue: Channel::new(),
+            data_tx_signal: Signal::new(),
             interface_control: None,
+            data_tx_signal_2: Signal::new(),
         }
     }
 }
 
-pub struct DsWiFiControl<> {}
+pub enum DsWiFiControlEvent {
+    FrameRequired,
+    FrameGenerated,
+}
+pub struct DsWiFiControl<'res> {
+    pub data_rx: DynamicReceiver<'res,([u8;300], u16)>,
+    pub data_tx_mutex: &'res Mutex<NoopRawMutex, ([u8;300], u16)>,
+    pub data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
+    pub data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>
+}
 
 pub struct DsWiFiInput<'res> {
     transmit_endpoint: LMacTransmitEndpoint<'res>,
     mac_address: [u8; 6],
     bg_rx_queue: DynamicSender<'res, BorrowedBuffer<'res, 'res>>,
     ack_rx_queue: DynamicSender<'res, (MACAddress, Instant)>,
+    data_rx_queue: DynamicSender<'res,([u8;300], u16)>,
 }
 
 impl DsWiFiInput<'_> {
@@ -247,8 +267,7 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                                 let (c2h_frame,size) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
                                 self.send_ack().await;
                                 if c2h_frame.payload_size > 0 {
-                                    info!("got c2h data frame: payload size {}",c2h_frame.payload_size);
-                                    info!("{:X?}", c2h_frame.payload.unwrap());
+                                    self.data_rx_queue.try_send(c2h_frame.payload.unwrap()).expect("todo")
                                 }
                             }
                             DataFrameReadPayload::AMSDU(_) => {}
@@ -289,7 +308,7 @@ impl Default for DsWiFiInitInfo {
 impl Interface for DsWiFiInterface {
     const NAME: &str = "DS-WiFi";
     type SharedResourcesType<'res> = DsWiFiSharedResources<'res>;
-    type ControlType<'res> = DsWiFiControl<>;
+    type ControlType<'res> = DsWiFiControl<'res>;
     type RunnerType<'res> = DsWiFiRunner<'res>;
     type InputType<'res> = DsWiFiInput<'res>;
     type InitInfo = DsWiFiInitInfo;
@@ -317,10 +336,12 @@ impl Interface for DsWiFiInterface {
         shared_resources.interface_control = Some(interface_control);
         let interface_control = shared_resources.interface_control.as_ref().unwrap();
 
-
         (
             DsWiFiControl {
-
+                data_rx: shared_resources.data_queue.dyn_receiver(),
+                data_tx_mutex: &shared_resources.data_tx_mutex,
+                data_tx_signal: &shared_resources.data_tx_signal,
+                data_tx_signal_2: &shared_resources.data_tx_signal_2,
             },
             DsWiFiRunner {
                 transmit_endpoint,
@@ -330,12 +351,16 @@ impl Interface for DsWiFiInterface {
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_receiver(),
                 start_time: Instant::now(),
                 ack_rx_queue: shared_resources.ack_rx_queue.dyn_receiver(),
+                data_tx_mutex: &shared_resources.data_tx_mutex,
+                data_tx_signal: &shared_resources.data_tx_signal,
+                data_tx_signal_2: &shared_resources.data_tx_signal_2,
             },
             DsWiFiInput {
                 transmit_endpoint,
                 mac_address,
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_sender(),
                 ack_rx_queue: shared_resources.ack_rx_queue.dyn_sender(),
+                data_rx_queue: shared_resources.data_queue.dyn_sender(),
             }
         )
     }
