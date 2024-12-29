@@ -14,15 +14,17 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, WiFiRate};
+use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::esp32_wifi_hal_rs::RxFilterBank::{ReceiverAddress, BSSID};
 use foa::esp32_wifi_hal_rs::RxFilterInterface::Zero;
 use foa::interface;
 use foa::interface::{Interface, InterfaceInput, InterfaceRunner};
 use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint};
-use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FrameType, ManagementFrameSubtype, SequenceControl};
+use hex_literal::hex;
+use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FCFFlags, FrameType, ManagementFrameSubtype, SequenceControl};
 use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
 use ieee80211::data_frame::{DataFrame, DataFrameReadPayload};
+use ieee80211::data_frame::header::DataFrameHeader;
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{BeaconFrame, ManagementFrame, ManagementFrameHeader};
@@ -179,10 +181,49 @@ impl Default for DsWiFiSharedResources<'_> {
 pub struct DsWiFiControl<> {}
 
 pub struct DsWiFiInput<'res> {
+    transmit_endpoint: LMacTransmitEndpoint<'res>,
+    mac_address: [u8; 6],
     bg_rx_queue: DynamicSender<'res, BorrowedBuffer<'res, 'res>>,
     ack_rx_queue: DynamicSender<'res, (MACAddress, Instant)>,
 }
 
+impl DsWiFiInput<'_> {
+    async fn send_ack(&mut self) {
+        let ack = hex!("82000000");
+        let frame = DataFrame {
+            header: DataFrameHeader {
+                subtype: DataFrameSubtype::DataCFAck,
+                fcf_flags: FCFFlags::new().with_from_ds(true),
+                duration: 0,
+                address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x03]),
+                address_2: MACAddress::from(self.mac_address),
+                address_3: MACAddress::from(self.mac_address),
+                sequence_control: Default::default(),
+                address_4: None,
+                qos: None,
+                ht_control: None,
+            },
+            payload: Some(ack.as_slice()),
+            _phantom: Default::default(),
+        };
+        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+
+        let written = buffer.pwrite_with(frame, 0, false).unwrap();
+
+        let _ = self.transmit_endpoint.transmit(
+            &mut buffer[..written],
+            &TxParameters {
+                rate: WiFiRate::PhyRate2MS,
+                wait_for_ack: false,
+                duration: 0,
+                tx_error_behaviour: TxErrorBehaviour::Drop,
+                interface_one: false,
+                interface_zero: false,
+                override_seq_num: true
+            },
+        ).await;
+    }
+}
 impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
     async fn interface_input(&mut self, borrowed_buffer: BorrowedBuffer<'res, 'res>) {
         //info!("InterfaceInput: {:X?}", borrowed_buffer.mpdu_buffer());
@@ -204,7 +245,8 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                         match frame.payload.unwrap() {
                             DataFrameReadPayload::Single(data) => {
                                 let (c2h_frame,size) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
-                                info!("got c2h data frame: payload size {}",c2h_frame.payload_size);
+                                self.send_ack().await;
+                                info!("got c2h data frame: pay load size {}",c2h_frame.payload_size);
                             }
                             DataFrameReadPayload::AMSDU(_) => {}
                         }
@@ -216,6 +258,7 @@ impl<'res> InterfaceInput<'res> for DsWiFiInput<'res, > {
                         if let Err(_) = self.ack_rx_queue.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
                             error!("Failed to send ack to runner");
                         }
+                        self.send_ack().await;
                     }
 
                     _ => {
@@ -284,6 +327,8 @@ impl Interface for DsWiFiInterface {
                 ack_rx_queue: shared_resources.ack_rx_queue.dyn_receiver(),
             },
             DsWiFiInput {
+                transmit_endpoint,
+                mac_address,
                 bg_rx_queue: shared_resources.bg_rx_queue.dyn_sender(),
                 ack_rx_queue: shared_resources.ack_rx_queue.dyn_sender(),
             }
