@@ -5,17 +5,20 @@
 use core::future::join;
 use core::mem::MaybeUninit;
 use embassy_executor::Spawner;
-use embassy_futures::join::join;
+use embassy_futures::join::{join, join3};
 use embassy_futures::yield_now;
-use embassy_time::Timer;
+use embassy_time::{Duration, Ticker, Timer};
 use esp_alloc::EspHeap;
 use esp_backtrace as _;
 use esp_hal::{rng::Rng, timer::timg::TimerGroup};
+use esp_hal::xtensa_lx::interrupt::clear;
 use foa::{bg_task::SingleInterfaceRunner, FoAStackResources};
-use log::{info, LevelFilter};
-use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiSharedResources};
+use log::{error, info, LevelFilter};
+use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiClientMaskMath};
 use foa_dswifi::DsWiFiControlEvent::FrameGenerated;
-/*const HEAP_SIZE: usize = 1 * 1024;
+use foa_dswifi::pictochat_application::PictoChatApplication;
+
+const HEAP_SIZE: usize = 1 * 1024;
 
 fn init_heap() {
     static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
@@ -29,7 +32,7 @@ fn init_heap() {
 
     }
 }
-*/
+
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
         static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
@@ -43,6 +46,7 @@ macro_rules! mk_static {
 async fn wifi_task(mut wifi_runner: SingleInterfaceRunner<'static, DsWiFiInterface>) -> ! {
     wifi_runner.run().await
 }
+
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -73,16 +77,9 @@ async fn main(spawner: Spawner) {
     info!("Spawning Wifi Task");
     spawner.spawn(wifi_task(runner)).unwrap();
 
-    join(async {
-        loop {
-            ds_control.data_tx_signal.wait().await;
-            ds_control.data_tx_signal.reset();
-            ds_control.data_tx_signal_2.signal(FrameGenerated);
-        }
-    }, async {
-        loop {
-            let (aaa,bbb) = ds_control.data_rx.receive().await;
-            info!("{:X?}", aaa);
-        }
-    }).await;
+    let mut pictochat_app = PictoChatApplication {
+        ds_wifi_control: ds_control,
+    };
+
+    pictochat_app.run().await;
 }

@@ -5,13 +5,13 @@ use core::marker::PhantomData;
 use embassy_futures::join::join;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::DynamicReceiver;
+use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::interface::InterfaceRunner;
-use foa::lmac::{LMacInterfaceControl, LMacTransmitEndpoint, OffChannelRequest};
+use foa::lmac::{LMacError, LMacInterfaceControl, LMacTransmitEndpoint, OffChannelRequest};
 use hex_literal::hex;
 use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameCF, DataFrameSubtype, FCFFlags, IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl};
 use ieee80211::{element_chain, match_frames, supported_rates};
@@ -25,8 +25,9 @@ use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, A
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
 use log::{debug, info, trace, warn};
-use crate::{DsWiFiClient, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, MAX_CLIENTS};
+use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
 use crate::DsWiFiControlEvent::FrameRequired;
+use crate::DsWiFiInterfaceControlEventResponse::{Failed, Success};
 use crate::packets::{BeaconType, DSWiFiBeaconTag, HostToClientDataFrame};
 use crate::pictochat_packets::{PictochatBeacon, PictochatChatroom};
 
@@ -40,7 +41,10 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) start_time: Instant,
     pub(crate) data_tx_mutex: &'res Mutex<NoopRawMutex, ([u8;300], u16)>,
     pub(crate) data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
-    pub(crate) data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>
+    pub(crate) data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
+    pub(crate) control_responder: Responder<'res, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse>,
+    pub(crate) beacons_enabled: Mutex<NoopRawMutex, bool>,
+    pub(crate) event_tx: DynamicSender<'res,DsWiFiClientEvent>,
 
 }
 
@@ -219,6 +223,7 @@ impl DsWiFiRunner<'_> {
 
 
         client_manager.update_client_state(assoc.header.transmitter_address,DsWiFiClientState::Connected);
+        self.event_tx.send(DsWiFiClientEvent::Connected(*assoc.header.transmitter_address)).await;
 
         Timer::after_micros(500).await;
     }
@@ -227,6 +232,8 @@ impl DsWiFiRunner<'_> {
         let mut client_manager = self.client_manager.lock().await;
 
         let aid = client_manager.get_client(deauth.header.transmitter_address).unwrap().association_id;
+        self.event_tx.send(DsWiFiClientEvent::Disconnected(*deauth.header.transmitter_address)).await;
+
         info!("disconnecting client with aid {} due to deauth frame", aid.aid());
 
         client_manager.remove_client(aid);
@@ -257,6 +264,12 @@ impl DsWiFiRunner<'_> {
 
     async fn send_beacon(&self,ticker: &mut Ticker) {
         ticker.next().await;
+        {
+            let enabled = self.beacons_enabled.lock().await;
+            if !*enabled {
+                return;
+            }
+        }
         let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
@@ -343,6 +356,8 @@ impl DsWiFiRunner<'_> {
                 if client.last_heard_from.elapsed() > Duration::from_secs(1) {
                     info!("client {:X?} timed out", client.associated_mac_address);
                     self.send_deauth(&client.associated_mac_address).await;
+                    self.event_tx.send(DsWiFiClientEvent::Disconnected(client.associated_mac_address)).await;
+
                     timed_clients[i] = Some(client.association_id);
                     i+=1;
                 }
@@ -442,30 +457,31 @@ impl DsWiFiRunner<'_> {
             }
         }
     }
-    async fn tick(&self, beacon_ticker: &mut Ticker, data_rate_limit: &mut Ticker, timeout_check_rate: &mut Ticker) {
-        let _ = select3(
-            self.send_data_tick(data_rate_limit),
-            self.send_beacon(beacon_ticker),
-            self.handle_timeouts(timeout_check_rate)
-        ).await;
-    }
-
-    async fn debug_log(&self, rate_ticker: &mut Ticker) {
-        rate_ticker.next().await;
-
-        let client_manager = self.client_manager.lock().await;
-
-        info!("=====================================");
-        info!("Clients Connected: {}", client_manager.all_clients_mask.num_clients());
-        info!("All Client Mask: {}", client_manager.all_clients_mask);
-        info!("Client List:");
-        for i in 0..MAX_CLIENTS {
-            let client_opt = &client_manager.clients[i];
-            if let Some(client) = client_opt {
-                info!("Client: aid: {}, mac: {:X?}, state {:?}, index: {}",client.association_id.aid(),client.associated_mac_address, client.state, i);
+    async fn handle_control(&self) {
+        let request = self.control_responder.wait_for_request().await;
+        match request {
+            DsWiFiInterfaceControlEvent::SetChannel(channel) => {
+                if let Err(_) = self.interface_control.set_and_lock_channel(channel).await {
+                    self.control_responder.send_response(Failed);
+                } else {
+                    self.control_responder.send_response(Success);
+                }
+            },
+            DsWiFiInterfaceControlEvent::SetBeaconsEnabled(new_enabled) => {
+                let mut enabled = self.beacons_enabled.lock().await;
+                *enabled = new_enabled;
+                self.control_responder.send_response(Success);
             }
         }
-        return;
+    }
+
+    async fn tick(&self, beacon_ticker: &mut Ticker, data_rate_limit: &mut Ticker, timeout_check_rate: &mut Ticker) {
+        let _ = select4(
+            self.send_data_tick(data_rate_limit),
+            self.send_beacon(beacon_ticker),
+            self.handle_timeouts(timeout_check_rate),
+            self.handle_control()
+        ).await;
     }
 
 
@@ -478,22 +494,20 @@ impl InterfaceRunner for DsWiFiRunner<'_> {
 
         let mut beacon_ticker =  Ticker::every(Duration::from_millis(100));
         let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
-        let mut log_ticker = Ticker::every(Duration::from_secs(1));
         let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
 
         loop {
-            match select4(
+            match select3(
                 self.interface_control.wait_for_off_channel_request(),
                 self.bg_rx_queue.receive(),
-                self.debug_log(&mut log_ticker),
                 self.tick(&mut beacon_ticker,
                           &mut data_rate_limit,
                           &mut timeout_check_rate),
             ).await {
-                Either4::First(off_channel_request) => {
+                Either3::First(off_channel_request) => {
                     off_channel_request.reject();
                 },
-                Either4::Second(buffer) => {self.handle_bg_rx(buffer).await;},
+                Either3::Second(buffer) => {self.handle_bg_rx(buffer).await;},
                 _ => {}
             }
         }

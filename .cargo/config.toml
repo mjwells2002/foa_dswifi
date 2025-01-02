@@ -1,5 +1,5 @@
 [target.xtensa-esp32-none-elf]
-runner = "espflash flash --monitor"
+runner = "espflash flash --monitor -f 80mhz -B 2000000 -C"
 
 [env]
 ESP_LOG="INFO"

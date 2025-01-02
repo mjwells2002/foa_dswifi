@@ -1,6 +1,5 @@
 use bitflags::{bitflags, Flags};
 use embedded_io_async::Read;
-use esp_hal::aes::Endianness::LittleEndian;
 use ieee80211::scroll;
 use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx, TryIntoCtx};
 use ieee80211::scroll::{Endian, Pread, Pwrite};
@@ -118,7 +117,7 @@ bitflags! {
 impl TryFromCtx<'_, ()> for ClientToHostDataFrame<> {
     type Error = scroll::Error;
 
-    //TODO: how do i deal with the payload here
+    //TODO: do something better for the payload, this is dirty
     fn try_from_ctx(from: &[u8], _: ()) -> Result<(Self, usize), Self::Error> {
         let mut offset = 0;
 

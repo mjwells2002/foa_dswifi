@@ -1,9 +1,11 @@
 #![no_std]
 #![feature(core_intrinsics)]
+extern crate alloc;
 
 mod runner;
 mod packets;
 mod pictochat_packets;
+pub mod pictochat_application;
 
 use core::future::Future;
 use core::marker::PhantomData;
@@ -39,9 +41,68 @@ pub struct DsWiFiInterface;
 
 const MAX_CLIENTS: usize = 15;
 
+pub struct RequestResponseSignal<Request, Response> {
+    request_signal: Signal<NoopRawMutex, Request>,
+    response_signal: Signal<NoopRawMutex, Response>,
+}
+
+pub struct Requester<'a, Request, Response> {
+    request_signal: &'a Signal<NoopRawMutex, Request>,
+    response_signal: &'a Signal<NoopRawMutex, Response>,
+}
+
+pub struct Responder<'a, Request, Response> {
+    request_signal: &'a Signal<NoopRawMutex, Request>,
+    response_signal: &'a Signal<NoopRawMutex, Response>,
+}
+
+impl<'a, Request, Response> Requester<'a, Request, Response> {
+    pub async fn send_request_and_wait(&self, request: Request) -> Response {
+        if self.request_signal.signaled() {
+            panic!("Request already sent");
+        }
+        self.request_signal.signal(request);
+        let res = self.response_signal.wait().await;
+        self.response_signal.reset();
+        res
+    }
+
+}
+
+impl<'a, Request, Response> Responder<'a, Request, Response> {
+    pub async fn wait_for_request(&self) -> Request {
+        self.request_signal.wait().await
+    }
+    pub fn send_response(&self, response: Response) {
+        self.response_signal.signal(response);
+    }
+}
+impl<Request, Response> RequestResponseSignal<Request, Response> {
+    pub fn new() -> Self {
+        Self {
+            request_signal: Signal::new(),
+            response_signal: Signal::new(),
+        }
+    }
+
+    pub fn get_requester(&self) -> Requester<Request,Response> {
+        Requester {
+            request_signal: &self.request_signal,
+            response_signal: &self.response_signal,
+        }
+    }
+
+    pub fn get_responder(&self) -> Responder<Request,Response> {
+        Responder {
+            request_signal: &self.request_signal,
+            response_signal: &self.response_signal,
+        }
+    }
+}
+
 pub struct DsWiFiClientManager {
-    clients: [Option<DsWiFiClient>; MAX_CLIENTS],
-    all_clients_mask: DsWifiClientMask,
+    pub clients: [Option<DsWiFiClient>; MAX_CLIENTS],
+    pub all_clients_mask: DsWifiClientMask,
 
 }
 impl DsWiFiClientManager {
@@ -112,6 +173,11 @@ pub struct DsWiFiClient {
     association_id: AssociationID,
     last_heard_from: Instant,
 }
+impl DsWiFiClient {
+    pub fn log_client_info(&self) {
+        info!("Client: aid: {}, mac: {:X?}, state {:?}",self.association_id.aid(),self.associated_mac_address, self.state);
+    }
+}
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DsWiFiClientState {
     Associating,
@@ -153,7 +219,21 @@ impl DsWifiAidClientMaskBits for AssociationID {
 
 }
 
+pub enum DsWiFiInterfaceControlEvent {
+    SetChannel(u8),
+    SetBeaconsEnabled(bool),
+    
+}
 
+pub enum DsWiFiInterfaceControlEventResponse {
+    Failed,
+    Success,
+}
+
+pub enum DsWiFiClientEvent {
+    Disconnected([u8; 6]),
+    Connected([u8; 6]),
+}
 
 pub struct DsWiFiSharedResources<'res> {
     client_manager: Mutex<NoopRawMutex, DsWiFiClientManager>,
@@ -167,6 +247,8 @@ pub struct DsWiFiSharedResources<'res> {
     data_queue: Channel<NoopRawMutex, ([u8;300],u16), 4>,
     data_tx_signal: Signal<NoopRawMutex, DsWiFiControlEvent>,
     data_tx_signal_2: Signal<NoopRawMutex, DsWiFiControlEvent>,
+    control_channel: RequestResponseSignal<DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse>,
+    client_queue: Channel<NoopRawMutex, DsWiFiClientEvent, 4>,
 }
 
 impl Default for DsWiFiSharedResources<'_> {
@@ -184,6 +266,8 @@ impl Default for DsWiFiSharedResources<'_> {
             data_tx_signal: Signal::new(),
             interface_control: None,
             data_tx_signal_2: Signal::new(),
+            control_channel: RequestResponseSignal::new(),
+            client_queue: Channel::new(),
         }
     }
 }
@@ -196,7 +280,12 @@ pub struct DsWiFiControl<'res> {
     pub data_rx: DynamicReceiver<'res,([u8;300], u16)>,
     pub data_tx_mutex: &'res Mutex<NoopRawMutex, ([u8;300], u16)>,
     pub data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
-    pub data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>
+    pub data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
+    pub control_requester: Requester<'res, DsWiFiInterfaceControlEvent,DsWiFiInterfaceControlEventResponse>,
+    pub client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
+    pub event_rx: DynamicReceiver<'res,DsWiFiClientEvent>,
+    pub mac_address: [u8; 6],
+
 }
 
 pub struct DsWiFiInput<'res> {
@@ -324,7 +413,7 @@ impl Interface for DsWiFiInterface {
         Self::RunnerType<'res>,
         Self::InputType<'res>,
     ) {
-        interface_control.set_and_lock_channel(7).await.expect("TODO: panic message");
+        //interface_control.set_and_lock_channel(7).await.expect("TODO: panic message");
 
         interface_control.set_filter_parameters(BSSID,mac_address,None);
         interface_control.set_filter_parameters(ReceiverAddress,mac_address,Some([0x00;6]));
@@ -342,6 +431,10 @@ impl Interface for DsWiFiInterface {
                 data_tx_mutex: &shared_resources.data_tx_mutex,
                 data_tx_signal: &shared_resources.data_tx_signal,
                 data_tx_signal_2: &shared_resources.data_tx_signal_2,
+                control_requester: shared_resources.control_channel.get_requester(),
+                client_manager: &shared_resources.client_manager,
+                event_rx: shared_resources.client_queue.dyn_receiver(),
+                mac_address
             },
             DsWiFiRunner {
                 transmit_endpoint,
@@ -354,6 +447,9 @@ impl Interface for DsWiFiInterface {
                 data_tx_mutex: &shared_resources.data_tx_mutex,
                 data_tx_signal: &shared_resources.data_tx_signal,
                 data_tx_signal_2: &shared_resources.data_tx_signal_2,
+                control_responder: shared_resources.control_channel.get_responder(),
+                beacons_enabled: Mutex::from(false),
+                event_tx: shared_resources.client_queue.dyn_sender(),
             },
             DsWiFiInput {
                 transmit_endpoint,
