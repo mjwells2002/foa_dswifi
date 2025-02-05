@@ -61,6 +61,7 @@ pub enum PictochatChatroom {
     D = 0x03
 }
 
+#[derive(Debug, Eq, PartialEq)]
 pub struct PictochatHeader {
     pub type_id: u16,
     pub size_with_header: u16,
@@ -94,9 +95,9 @@ impl TryFromCtx<'_, ()> for PictochatHeader {
     }
 }
 pub struct PictochatType45 {
-    header: PictochatHeader,
-    magic: [u8; 4],
-    members: [MACAddress;16],
+    pub header: PictochatHeader,
+    pub magic: [u8; 4],
+    pub members: [MACAddress;16],
 }
 
 impl MeasureWith<()> for PictochatType45 {
@@ -143,11 +144,11 @@ impl Default for PictochatType45 {
 }
 
 pub struct PictochatType1 {
-    header: PictochatHeader,
-    console_id: DsWifiClientMask,
-    magic_1: [u8;2],
-    data_size: u16,
-    magic_2: [u8;10],
+    pub header: PictochatHeader,
+    pub console_id: DsWifiClientMask,
+    pub magic_1: [u8;2],
+    pub data_size: u16,
+    pub magic_2: [u8;10],
 }
 
 impl Default for PictochatType1 {
@@ -210,14 +211,14 @@ impl TryFromCtx<'_, ()> for PictochatType1 {
 }
 
 pub struct PictochatType2 {
-    header: PictochatHeader,
-    sending_console_id: u8,
-    payload_type: u8,
+    pub header: PictochatHeader,
+    pub sending_console_id: u8,
+    pub payload_type: u8,
     //payload_length: u8,
-    transfer_flags: u8,
-    write_offset: u16,
+    pub transfer_flags: u8,
+    pub write_offset: u16,
     //todo: do something better
-    payload: Vec<u8>,
+    pub payload: Vec<u8>,
 }
 
 impl MeasureWith<()> for PictochatType2 {

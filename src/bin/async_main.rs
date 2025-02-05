@@ -2,21 +2,19 @@
 #![no_main]
 #![feature(future_join)]
 
-use core::future::join;
 use core::mem::MaybeUninit;
+use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
-use embassy_futures::join::{join, join3};
-use embassy_futures::yield_now;
-use embassy_time::{Duration, Ticker, Timer};
-use esp_alloc::EspHeap;
-use esp_backtrace as _;
+use embassy_sync::channel::Channel;
+use embassy_sync::mutex::Mutex;
 use esp_hal::{rng::Rng, timer::timg::TimerGroup};
-use esp_hal::xtensa_lx::interrupt::clear;
+use esp_println::println;
 use foa::{bg_task::SingleInterfaceRunner, FoAStackResources};
-use log::{error, info, LevelFilter};
 use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiClientMaskMath};
-use foa_dswifi::DsWiFiControlEvent::FrameGenerated;
-use foa_dswifi::pictochat_application::PictoChatApplication;
+use foa_dswifi::pictochat_application::{PictoChatApplication, PictoChatUserManager};
+
+
+use {esp_backtrace as _, defmt as _};
 
 const HEAP_SIZE: usize = 1 * 1024;
 
@@ -51,10 +49,8 @@ async fn wifi_task(mut wifi_runner: SingleInterfaceRunner<'static, DsWiFiInterfa
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
-    esp_println::logger::init_logger_from_env();
 
-    //init_heap();
-
+    init_heap();
 
     info!("Hello, world!");
 
@@ -77,8 +73,13 @@ async fn main(spawner: Spawner) {
     info!("Spawning Wifi Task");
     spawner.spawn(wifi_task(runner)).unwrap();
 
+
     let mut pictochat_app = PictoChatApplication {
         ds_wifi_control: ds_control,
+        user_state_manager: Mutex::new(PictoChatUserManager {
+            users: [const { None };15],
+        }),
+        state_queue: Channel::new(),
     };
 
     pictochat_app.run().await;

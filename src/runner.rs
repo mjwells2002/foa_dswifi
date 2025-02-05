@@ -2,6 +2,8 @@ use core::cmp::PartialEq;
 use core::future::Future;
 use core::intrinsics::{black_box, unreachable};
 use core::marker::PhantomData;
+use core::sync::atomic::{AtomicU16, Ordering};
+use defmt::{debug, info, warn};
 use embassy_futures::join::join;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -24,13 +26,17 @@ use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame, BeaconFrame, DeauthenticationFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::Pwrite;
-use log::{debug, info, trace, warn};
 use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
 use crate::DsWiFiControlEvent::FrameRequired;
 use crate::DsWiFiInterfaceControlEventResponse::{Failed, Success};
-use crate::packets::{BeaconType, DSWiFiBeaconTag, HostToClientDataFrame};
+use crate::packets::{BeaconType, DSWiFiBeaconTag, HostToClientDataFrame, HostToClientFlags, HostToClientFooter};
 use crate::pictochat_packets::{PictochatBeacon, PictochatChatroom};
 
+pub struct PendingDataFrame {
+    pub data: [u8; 300],
+    pub size: u16,
+    pub flags: HostToClientFlags,
+}
 pub struct DsWiFiRunner<'res> {
     pub(crate) transmit_endpoint: LMacTransmitEndpoint<'res>,
     pub(crate) interface_control: &'res LMacInterfaceControl<'res>,
@@ -39,13 +45,13 @@ pub struct DsWiFiRunner<'res> {
     pub(crate) client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
     pub(crate) ack_rx_queue: DynamicReceiver<'res, (MACAddress, Instant)>,
     pub(crate) start_time: Instant,
-    pub(crate) data_tx_mutex: &'res Mutex<NoopRawMutex, ([u8;300], u16)>,
+    pub(crate) data_tx_mutex: &'res Mutex<NoopRawMutex, PendingDataFrame>,
     pub(crate) data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
     pub(crate) data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
     pub(crate) control_responder: Responder<'res, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse>,
     pub(crate) beacons_enabled: Mutex<NoopRawMutex, bool>,
     pub(crate) event_tx: DynamicSender<'res,DsWiFiClientEvent>,
-
+    pub(crate) data_seq: AtomicU16
 }
 
 /* ChatGPT wrote these 2 functions, it may be wrong */
@@ -345,7 +351,44 @@ impl DsWiFiRunner<'_> {
     async fn send_deauth(&self, target: &[u8; 6]) {
         //todo: this
     }
+    async fn send_ack(&self) {
+        let tx = Instant::now();
 
+        let ack = hex!("82000000");
+        let frame = DataFrame {
+            header: DataFrameHeader {
+                subtype: DataFrameSubtype::DataCFAck,
+                fcf_flags: FCFFlags::new().with_from_ds(true),
+                duration: 0,
+                address_1: MACAddress::from([0x03,0x09,0xbf,0x00,0x00,0x03]),
+                address_2: MACAddress::from(self.mac_address),
+                address_3: MACAddress::from(self.mac_address),
+                sequence_control: Default::default(),
+                address_4: None,
+                qos: None,
+                ht_control: None,
+            },
+            payload: Some(ack.as_slice()),
+            _phantom: Default::default(),
+        };
+        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+
+        let written = buffer.pwrite_with(frame, 0, false).unwrap();
+
+        //info!("ack2 delay: {}", (Instant::now() - tx).as_micros());
+        let _ = self.transmit_endpoint.transmit(
+            &mut buffer[..written],
+            &TxParameters {
+                rate: WiFiRate::PhyRate2MS,
+                wait_for_ack: false,
+                duration: 0,
+                tx_error_behaviour: TxErrorBehaviour::Drop,
+                interface_one: false,
+                interface_zero: false,
+                override_seq_num: true
+            },
+        ).await;
+    }
     async fn handle_timeouts(&self, ticker: &mut Ticker) {
         ticker.next().await;
         let mut timed_clients: [Option<AssociationID>; MAX_CLIENTS] = [None; MAX_CLIENTS];
@@ -354,7 +397,7 @@ impl DsWiFiRunner<'_> {
         for client in &client_manager.clients {
             if let Some(client) = client {
                 if client.last_heard_from.elapsed() > Duration::from_secs(1) {
-                    info!("client {:X?} timed out", client.associated_mac_address);
+                    info!("client {:?} timed out", client.associated_mac_address);
                     self.send_deauth(&client.associated_mac_address).await;
                     self.event_tx.send(DsWiFiClientEvent::Disconnected(client.associated_mac_address)).await;
 
@@ -373,13 +416,6 @@ impl DsWiFiRunner<'_> {
     async fn send_data_tick(&self, ticker: &mut Ticker) {
         ticker.next().await;
 
-        self.data_tx_signal.signal(FrameRequired);
-
-        self.data_tx_signal_2.wait().await;
-        self.data_tx_signal_2.reset();
-
-        let payload_guard = self.data_tx_mutex.lock().await;
-        let (payload,size) = *payload_guard;
 
         let mut mask = {
             let client_manager = self.client_manager.lock().await;
@@ -388,8 +424,21 @@ impl DsWiFiRunner<'_> {
                 return;
             }
 
-             client_manager.all_clients_mask
+            if !client_manager.last_mask.is_empty() {
+                client_manager.last_mask
+            } else {
+                self.data_tx_signal.signal(FrameRequired);
+
+                self.data_tx_signal_2.wait().await;
+                self.data_tx_signal_2.reset();
+                client_manager.all_clients_mask
+            }
         };
+
+
+        let payload = self.data_tx_mutex.lock().await;
+
+        //info!("sending data frame with payload size {}", payload.size);
 
         let max_client_ack_wait_micros = 998;
 
@@ -409,9 +458,12 @@ impl DsWiFiRunner<'_> {
             payload: Some(HostToClientDataFrame::<&[u8]> {
                 us_per_client_reply: max_client_ack_wait_micros,
                 client_target_mask: mask,
-                flags: Default::default(),
-                payload: if size != 0 { Some(&payload[..size as usize]) } else { None },
-                footer: None,
+                flags: payload.flags,
+                payload: if payload.size != 0 { Some(&payload.data[..payload.size as usize]) } else { None },
+                footer: Some(HostToClientFooter {
+                    data_seq: self.data_seq.fetch_add(1,Ordering::Relaxed),
+                    client_target_mask: mask,
+                }),
             }),
             _phantom: Default::default(),
         };
@@ -440,7 +492,7 @@ impl DsWiFiRunner<'_> {
 
         //TODO: this still isnt right, but it works most of the time
         //180us is the average observed queue latency from rx to processing
-        let mut timeout = Timer::after_micros(((max_client_ack_wait_micros + 180) * (mask.num_clients() as u16)) as u64);
+        let mut timeout = Timer::after_micros(((max_client_ack_wait_micros * 5) * (mask.num_clients() as u16)) as u64);
 
         while !mask.is_empty() {
             match select(&mut timeout,self.ack_rx_queue.receive()).await {
@@ -450,6 +502,10 @@ impl DsWiFiRunner<'_> {
                     if let Some(client) = client_manager.get_client_mut(ack_from) {
                         let ack = Instant::now();
                         debug!("ack latency: {} / {}", (ack - tx).as_micros(), (ack - ack_enqueue_time).as_micros());
+                        let aapl = (ack - tx).as_micros() - (ack - ack_enqueue_time).as_micros() - 216;
+                        debug!("adjusted ack processing latency {}",aapl);
+                        Timer::after_micros(450).await;
+                        self.send_ack().await;
                         client.last_heard_from = Instant::now();
                         mask.mask_subtract(client.association_id.get_mask_bits());
                     }

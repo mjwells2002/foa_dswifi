@@ -1,10 +1,10 @@
 use bitflags::{bitflags, Flags};
+use defmt::error;
 use embedded_io_async::Read;
 use ieee80211::scroll;
 use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx, TryIntoCtx};
 use ieee80211::scroll::{Endian, Pread, Pwrite};
 use ieee80211::scroll::Endian::Little;
-use log::error;
 use crate::DsWifiClientMask;
 
 pub struct DSWiFiBeaconTag<Payload: TryIntoCtx<()> + MeasureWith<()>> {
@@ -218,7 +218,7 @@ impl<Payload: TryIntoCtx<Error = scroll::Error> + MeasureWith<()> + AsRef<[u8]>>
         buf.gwrite_with(self.us_per_client_reply, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.client_target_mask, &mut offset, Endian::Little)?;
         if let Some(payload) = &self.payload {
-            buf.gwrite_with(payload.measure_with(&ctx) as u8, &mut offset, Endian::Little)?;
+            buf.gwrite_with((payload.measure_with(&ctx) / 2) as u8, &mut offset, Endian::Little)?;
         } else {
             buf.gwrite_with(0u8, &mut offset, Endian::Little)?;//no payload, so 0 length
         }

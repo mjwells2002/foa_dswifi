@@ -1,12 +1,14 @@
 [target.xtensa-esp32-none-elf]
-runner = "espflash flash --monitor -f 80mhz -B 2000000 -C"
+runner = "espflash flash --monitor -f 80mhz -B 3000000 -C -L defmt"
+#runner = "probe-rs download --chip=esp32 --speed 26000"
 
 [env]
-ESP_LOG="INFO"
+DEFMT_LOG="info"
 
 [build]
 rustflags = [
   "-C", "link-arg=-nostartfiles",
+
 ]
 
 target = "xtensa-esp32-none-elf"
