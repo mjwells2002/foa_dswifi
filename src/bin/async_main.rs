@@ -2,6 +2,7 @@
 #![no_main]
 #![feature(future_join)]
 
+use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
@@ -45,6 +46,9 @@ async fn wifi_task(mut wifi_runner: SingleInterfaceRunner<'static, DsWiFiInterfa
     wifi_runner.run().await
 }
 
+extern "C" {
+    fn phy_set_most_tpw(max_txpwr: i8) -> c_void;
+}
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
@@ -72,7 +76,9 @@ async fn main(spawner: Spawner) {
 
     info!("Spawning Wifi Task");
     spawner.spawn(wifi_task(runner)).unwrap();
-
+    // agc doenst really work correctly with my usecase here,
+    // limit the max tx power to avoid it cycling insanely high and insanely low
+    unsafe { phy_set_most_tpw(8); }
 
     let mut pictochat_app = PictoChatApplication {
         ds_wifi_control: ds_control,
