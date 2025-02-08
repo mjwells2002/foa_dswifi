@@ -10,10 +10,11 @@ use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use esp_hal::{rng::Rng, timer::timg::TimerGroup};
 use esp_println::println;
-use foa::{bg_task::SingleInterfaceRunner, FoAStackResources};
+use foa::bg_task::FoARunner;
+use foa::{FoAResources, VirtualInterface};
 use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiClientMaskMath};
 use foa_dswifi::pictochat_application::{PictoChatApplication, PictoChatUserManager};
-
+use foa_dswifi::runner::DsWiFiRunner;
 
 use {esp_backtrace as _, defmt as _};
 
@@ -42,8 +43,13 @@ macro_rules! mk_static {
 }
 
 #[embassy_executor::task]
-async fn wifi_task(mut wifi_runner: SingleInterfaceRunner<'static, DsWiFiInterface>) -> ! {
-    wifi_runner.run().await
+async fn foa_task(mut foa_runner: FoARunner<'static>) -> ! {
+    foa_runner.run().await
+}
+
+#[embassy_executor::task]
+async fn dswifi_task(mut sta_runner: DsWiFiRunner<'static, 'static>) -> ! {
+    sta_runner.run().await
 }
 
 extern "C" {
@@ -61,24 +67,33 @@ async fn main(spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
-    let stack_resources = mk_static!(
-        FoAStackResources<DsWiFiSharedResources>,
-        FoAStackResources::new()
-    );
-
-    let (ds_control, runner) = foa::new_with_single_interface::<DsWiFiInterface>(
+    let stack_resources = mk_static!(FoAResources, FoAResources::new());
+    let ([ds_vif, ..], foa_runner) = foa::init(
         stack_resources,
         peripherals.WIFI,
         peripherals.RADIO_CLK,
         peripherals.ADC2,
-        DsWiFiInitInfo::default(),
-    ).await;
+    );
+    spawner.spawn(foa_task(foa_runner)).unwrap();
 
-    info!("Spawning Wifi Task");
-    spawner.spawn(wifi_task(runner)).unwrap();
     // agc doenst really work correctly with my usecase here,
     // limit the max tx power to avoid it cycling insanely high and insanely low
+    // this probably has unintended side effects
     unsafe { phy_set_most_tpw(8); }
+
+    /*
+    let (mut sta_control, sta_runner, net_device) = foa_sta::new_sta_interface(
+        mk_static!(VirtualInterface<'static>, sta_vif),
+        sta_resources,
+        None,
+    );
+     */
+    let ds_resources = mk_static!(DsWiFiSharedResources<'static>, DsWiFiSharedResources::default());
+    let (ds_control,ds_runner) = foa_dswifi::new_ds_wifi_interface(
+        mk_static!(VirtualInterface<'static>, ds_vif),
+        ds_resources
+    );
+    spawner.spawn(dswifi_task(ds_runner)).unwrap();
 
     let mut pictochat_app = PictoChatApplication {
         ds_wifi_control: ds_control,

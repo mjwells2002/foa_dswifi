@@ -5,7 +5,7 @@ edition = "2021"
 
 
 [dependencies]
-foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa"}
+foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32"]}
 
 # ESP-HAL dependencies
 esp-hal = { version = "0.23.1", features = [

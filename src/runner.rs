@@ -1,9 +1,9 @@
 use core::cmp::PartialEq;
-use core::future::Future;
+use core::future::{join, Future};
 use core::intrinsics::{black_box, unreachable};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU16, Ordering};
-use defmt::{debug, info, warn};
+use defmt::{debug, error, info, warn};
 use embassy_futures::join::join;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -11,25 +11,26 @@ use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
-use foa::esp32_wifi_hal_rs::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
-use foa::interface::InterfaceRunner;
-use foa::lmac::{LMacError, LMacInterfaceControl, LMacTransmitEndpoint, OffChannelRequest};
+use foa::esp_wifi_hal::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
+use foa::lmac::{LMacError, LMacInterfaceControl, OffChannelRequest};
+use foa::RxQueueReceiver;
 use hex_literal::hex;
-use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameCF, DataFrameSubtype, FCFFlags, IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl};
-use ieee80211::{element_chain, match_frames, supported_rates};
+use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameCF, DataFrameSubtype, FCFFlags, FrameType, IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl};
+use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
 use ieee80211::data_frame::builder::DataFrameBuilder;
-use ieee80211::data_frame::DataFrame;
+use ieee80211::data_frame::{DataFrame, DataFrameReadPayload};
 use ieee80211::data_frame::header::DataFrameHeader;
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
 use ieee80211::elements::rates::SupportedRatesElement;
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame, BeaconFrame, DeauthenticationFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
+use ieee80211::scroll::ctx::TryFromCtx;
 use ieee80211::scroll::Pwrite;
 use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
 use crate::DsWiFiControlEvent::FrameRequired;
 use crate::DsWiFiInterfaceControlEventResponse::{Failed, Success};
-use crate::packets::{BeaconType, DSWiFiBeaconTag, HostToClientDataFrame, HostToClientFlags, HostToClientFooter};
+use crate::packets::{BeaconType, ClientToHostDataFrame, DSWiFiBeaconTag, HostToClientDataFrame, HostToClientFlags, HostToClientFooter};
 use crate::pictochat_packets::{PictochatBeacon, PictochatChatroom};
 
 pub struct PendingDataFrame {
@@ -37,21 +38,24 @@ pub struct PendingDataFrame {
     pub size: u16,
     pub flags: HostToClientFlags,
 }
-pub struct DsWiFiRunner<'res> {
-    pub(crate) transmit_endpoint: LMacTransmitEndpoint<'res>,
-    pub(crate) interface_control: &'res LMacInterfaceControl<'res>,
+pub struct DsWiFiRunner<'vif,'foa> {
+    pub(crate) interface_control: &'vif LMacInterfaceControl<'foa>,
     pub(crate) mac_address: [u8; 6],
-    pub(crate) bg_rx_queue: DynamicReceiver<'res, BorrowedBuffer<'res, 'res>>,
-    pub(crate) client_manager: &'res Mutex<NoopRawMutex, DsWiFiClientManager>,
-    pub(crate) ack_rx_queue: DynamicReceiver<'res, (MACAddress, Instant)>,
+    pub(crate) bg_rx_queue: DynamicReceiver<'vif, BorrowedBuffer<'foa>>,
+    pub(crate) client_manager: &'vif Mutex<NoopRawMutex, DsWiFiClientManager>,
+    pub(crate) ack_rx_queue: DynamicReceiver<'vif, (MACAddress, Instant)>,
     pub(crate) start_time: Instant,
-    pub(crate) data_tx_mutex: &'res Mutex<NoopRawMutex, PendingDataFrame>,
-    pub(crate) data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
-    pub(crate) data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
-    pub(crate) control_responder: Responder<'res, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse>,
+    pub(crate) data_tx_mutex: &'vif Mutex<NoopRawMutex, PendingDataFrame>,
+    pub(crate) data_tx_signal: &'vif Signal<NoopRawMutex, DsWiFiControlEvent>,
+    pub(crate) data_tx_signal_2: &'vif Signal<NoopRawMutex, DsWiFiControlEvent>,
+    pub(crate) control_responder: Responder<'vif, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse>,
     pub(crate) beacons_enabled: Mutex<NoopRawMutex, bool>,
-    pub(crate) event_tx: DynamicSender<'res,DsWiFiClientEvent>,
-    pub(crate) data_seq: AtomicU16
+    pub(crate) event_tx: DynamicSender<'vif,DsWiFiClientEvent>,
+    pub(crate) data_seq: AtomicU16,
+    pub(crate) interface_rx_queue: &'vif mut RxQueueReceiver<'foa>,
+    pub(crate) bg_rx_queue_sender: DynamicSender<'vif, BorrowedBuffer<'foa>>,
+    pub(crate) ack_rx_queue_sender: DynamicSender<'vif, (MACAddress, Instant)>,
+    pub(crate) data_rx_queue_sender: DynamicSender<'vif,([u8;300], MACAddress, u16)>,
 }
 
 /* ChatGPT wrote these 2 functions, it may be wrong */
@@ -101,15 +105,13 @@ fn ds_tx_params_for_dataframe(rate: WiFiRate, frame_size: usize, tx_error_behavi
     let air_duration = calculate_air_duration(rate, frame_size);
     TxParameters {
         rate,
-        interface_zero: false,
-        interface_one: false,
-        wait_for_ack: false,
         duration: air_duration,
         override_seq_num: true,
         tx_error_behaviour,
+        tx_timeout: 0,
     }
 }
-impl DsWiFiRunner<'_> {
+impl<'foa> DsWiFiRunner<'_,'foa> {
     async fn handle_auth_frame(&self, auth: AuthenticationFrame<'_>) {
         if auth.body.authentication_algorithm_number != IEEE80211AuthenticationAlgorithmNumber::OpenSystem {
             info!("Got Auth Frame but it was not OpenSystem");
@@ -138,7 +140,7 @@ impl DsWiFiRunner<'_> {
         });
 
 
-        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+        let mut buffer = self.interface_control.alloc_tx_buf().await;
 
         let frame = AuthenticationFrame {
             header: ManagementFrameHeader {
@@ -159,17 +161,16 @@ impl DsWiFiRunner<'_> {
 
         let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-        let _ = self.transmit_endpoint.transmit(
+        let _ = self.interface_control.transmit(
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                wait_for_ack: true,
                 duration: 248,
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
-                interface_one: false,
-                interface_zero: false,
-                override_seq_num: true
+                override_seq_num: true,
+                tx_timeout: 10,
             },
+            true
         ).await;
 
 
@@ -186,7 +187,7 @@ impl DsWiFiRunner<'_> {
         //
         caps.set_is_short_preamble_allowed(true);
 
-        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+        let mut buffer = self.interface_control.alloc_tx_buf().await;
 
         let frame = AssociationResponseFrame {
             header: ManagementFrameHeader {
@@ -201,7 +202,7 @@ impl DsWiFiRunner<'_> {
             body: AssociationResponseBody {
                 capabilities_info: caps,
                 status_code: IEEE80211StatusCode::Success,
-                association_id: client.association_id,
+                association_id: Option::from(client.association_id),
                 elements: element_chain! {
                         supported_rates![
                             1 B,
@@ -214,17 +215,16 @@ impl DsWiFiRunner<'_> {
 
         let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-        let _ = self.transmit_endpoint.transmit(
+        let _ = self.interface_control.transmit(
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                wait_for_ack: true,
                 duration: 248,
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
-                interface_one: false,
-                interface_zero: false,
-                override_seq_num: true
+                override_seq_num: true,
+                tx_timeout: 10,
             },
+            true
         ).await;
 
 
@@ -252,7 +252,7 @@ impl DsWiFiRunner<'_> {
     }
     async fn handle_bg_rx(
         &self,
-        buffer: BorrowedBuffer<'_, '_>,
+        buffer: BorrowedBuffer<'_>,
     ) {
         let _ = match_frames! {
             buffer.mpdu_buffer(),
@@ -276,7 +276,7 @@ impl DsWiFiRunner<'_> {
                 return;
             }
         }
-        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+        let mut buffer = self.interface_control.alloc_tx_buf().await;
 
         //todo: move all this stuff to api
         let beacon = {
@@ -333,17 +333,15 @@ impl DsWiFiRunner<'_> {
 
         let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-        let _ = self.transmit_endpoint.transmit(
+        let _ = self.interface_control.transmit(
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                wait_for_ack: false,
                 duration: 0,
                 tx_error_behaviour: TxErrorBehaviour::Drop,
-                interface_one: false,
-                interface_zero: false,
-                override_seq_num: true
-            },
+                override_seq_num: true,
+                tx_timeout: 0,
+            }, false
         ).await;
 
     }
@@ -371,22 +369,20 @@ impl DsWiFiRunner<'_> {
             payload: Some(ack.as_slice()),
             _phantom: Default::default(),
         };
-        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+        let mut buffer = self.interface_control.alloc_tx_buf().await;
 
         let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
         //info!("ack2 delay: {}", (Instant::now() - tx).as_micros());
-        let _ = self.transmit_endpoint.transmit(
+        let _ = self.interface_control.transmit(
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                wait_for_ack: false,
                 duration: 0,
                 tx_error_behaviour: TxErrorBehaviour::Drop,
-                interface_one: false,
-                interface_zero: false,
-                override_seq_num: true
-            },
+                override_seq_num: true,
+                tx_timeout: 0,
+            }, false
         ).await;
     }
     async fn handle_timeouts(&self, ticker: &mut Ticker) {
@@ -468,7 +464,7 @@ impl DsWiFiRunner<'_> {
             _phantom: Default::default(),
         };
 
-        let mut buffer = self.transmit_endpoint.alloc_tx_buf().await;
+        let mut buffer = self.interface_control.alloc_tx_buf().await;
 
         let written  = buffer.pwrite_with(frame, 0, false).unwrap();
 
@@ -477,9 +473,10 @@ impl DsWiFiRunner<'_> {
         }
 
         let tx_pre = Instant::now();
-        let res = self.transmit_endpoint.transmit(
+        let res = self.interface_control.transmit(
             &mut buffer[..written],
             &ds_tx_params_for_dataframe(WiFiRate::PhyRate2MS, written, TxErrorBehaviour::RetryUntil(4)),
+            false
         ).await;
         let tx = Instant::now();
 
@@ -517,7 +514,7 @@ impl DsWiFiRunner<'_> {
         let request = self.control_responder.wait_for_request().await;
         match request {
             DsWiFiInterfaceControlEvent::SetChannel(channel) => {
-                if let Err(_) = self.interface_control.set_and_lock_channel(channel).await {
+                if let Err(_) = self.interface_control.lock_channel(channel) {
                     self.control_responder.send_response(Failed);
                 } else {
                     self.control_responder.send_response(Success);
@@ -540,32 +537,91 @@ impl DsWiFiRunner<'_> {
         ).await;
     }
 
+    async fn interface_input(&self, borrowed_buffer: BorrowedBuffer<'foa>) {
+        //info!("InterfaceInput: {:X?}", borrowed_buffer.mpdu_buffer());
+        let rx = Instant::now();
+        let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
+            return;
+        };
+        match generic_frame.frame_control_field().frame_type() {
+            FrameType::Management(_) => {
+                if let Err(_) = self.bg_rx_queue_sender.try_send(borrowed_buffer) {
+                    // it will probably retry, this should be non-fatal
+                    error!("Failed to send to bg_rx_queue");
+                };
+            }
+            FrameType::Data(data) => {
+                match data {
+                    DataFrameSubtype::DataCFAck => {
+                        //TODO: parse frame and extract the app payload (if present) and forward it to control layer
+                        let frame = generic_frame.parse_to_typed::<DataFrame>().unwrap().unwrap();
+                        match frame.payload.unwrap() {
+                            DataFrameReadPayload::Single(data) => {
+                                let (c2h_frame,size) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
+                                let rx_ack = Instant::now();
+                                //info!("ack delay: {}", (rx_ack - rx).as_micros());
+                                if c2h_frame.payload_size > 0 {
+                                    let (frame,size) = c2h_frame.payload.unwrap();
+                                    self.data_rx_queue_sender.try_send((frame,generic_frame.address_2().unwrap(),size)).expect("todo")
+                                }
+                            }
+                            DataFrameReadPayload::AMSDU(_) => {}
+                        }
+                        if let Err(_) = self.ack_rx_queue_sender.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
+                            error!("Failed to send ack to runner");
+                        }
+                    }
+                    DataFrameSubtype::CFAck => {
 
-}
-impl InterfaceRunner for DsWiFiRunner<'_> {
+                        if let Err(_) = self.ack_rx_queue_sender.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
+                            error!("Failed to send ack to runner");
+                        }
 
+                    }
 
-    async fn run(&mut self) -> ! {
+                    _ => {
+                        warn!("Unhandled data Frame");
+                    }
+                }
+            }
+            _ => {
+                warn!("Unknown Frame");
+            }
+        }
+    }
+
+    pub async fn run(&mut self) -> ! {
         info!("Runner Says Hi");
 
-        let mut beacon_ticker =  Ticker::every(Duration::from_millis(100));
+        let mut beacon_ticker = Ticker::every(Duration::from_millis(100));
         let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
         let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
 
-        loop {
-            match select3(
-                self.interface_control.wait_for_off_channel_request(),
-                self.bg_rx_queue.receive(),
-                self.tick(&mut beacon_ticker,
-                          &mut data_rate_limit,
-                          &mut timeout_check_rate),
-            ).await {
-                Either3::First(off_channel_request) => {
-                    off_channel_request.reject();
-                },
-                Either3::Second(buffer) => {self.handle_bg_rx(buffer).await;},
-                _ => {}
+        join!(
+            async {
+                loop {
+                    let data = self.interface_rx_queue.receive().await;
+                    self.interface_input(data).await;
+                }
+            },
+            async {
+                loop {
+                    match select3(
+                        self.interface_control.wait_for_off_channel_request(),
+                        self.bg_rx_queue.receive(),
+                        self.tick(&mut beacon_ticker,
+                                  &mut data_rate_limit,
+                                  &mut timeout_check_rate),
+                    ).await {
+                        Either3::First(off_channel_request) => {
+                            off_channel_request.reject();
+                        },
+                        Either3::Second(buffer) => {self.handle_bg_rx(buffer).await;},
+                        _ => {}
+                    }
+                }
             }
-        }
+        ).await;
+        unreachable!()
     }
 }
