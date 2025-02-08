@@ -8,28 +8,28 @@ edition = "2021"
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa"}
 
 # ESP-HAL dependencies
-esp-hal = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal", features = [
+esp-hal = { version = "0.23.1", features = [
     "esp32", "defmt"
 ] }
-esp-hal-embassy = { git = "https://github.com/esp-rs/esp-hal", package = "esp-hal-embassy", features = [
+esp-hal-embassy = { version = "0.6.0", features = [
     "esp32", "defmt"
 ] }
-esp-alloc = { git = "https://github.com/esp-rs/esp-hal", package = "esp-alloc", features = ["defmt"] }
-esp-backtrace = { git = "https://github.com/esp-rs/esp-hal", package = "esp-backtrace", features = [
+esp-alloc = { version = "0.6.0", features = ["defmt"] }
+esp-backtrace = { version = "0.15.0", features = [
     "esp32",
     "panic-handler",
     "defmt"
 ] }
-esp-println = { git = "https://github.com/esp-rs/esp-hal", package = "esp-println", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
+esp-println = { version = "0.13.0", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
 
 # Embassy dependencies
-embassy-time = { version = "0.3.1", features = ["generic-queue-8", "defmt"] }
-embassy-executor = { version = "0.6.0", features = ["defmt"] }
+embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
+embassy-executor = { version = "0.7.0", features = ["defmt"] }
 
 # Misc
 #log = "0.4.21"
 static_cell = { version = "2.1.0" }
-ieee80211 = { git = "https://github.com/Frostie314159/ieee80211-rs", version = "0.5.0", default-features = false, features = ["defmt"]}
+ieee80211 = { git = "https://github.com/Frostie314159/ieee80211-rs", default-features = false, features = ["defmt"]}
 embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"
 embassy-sync = "0.6.1"
