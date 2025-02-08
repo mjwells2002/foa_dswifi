@@ -37,9 +37,6 @@ hex-literal = "0.4.1"
 bitflags = "2.6.0"
 defmt = "0.3.10"
 
-[patch.'https://github.com/esp32-open-mac/esp32-wifi-hal-rs']
-esp32-wifi-hal-rs = { git = "https://github.com/mjwells2002/esp32-wifi-hal-rs", package = "esp32-wifi-hal-rs" }
-
 [profile.dev]
 # Rust debug is too slow.
 # For debug builds always builds with some optimization
