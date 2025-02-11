@@ -10,6 +10,7 @@ mod packets;
 mod pictochat_packets;
 pub mod pictochat_application;
 
+use core::ffi::c_void;
 use core::future::Future;
 use core::marker::PhantomData;
 use core::ops::{BitAndAssign, BitOrAssign};
@@ -100,7 +101,10 @@ impl<Request, Response> RequestResponseSignal<Request, Response> {
         }
     }
 }
-
+extern "C" {
+    pub fn chip_v7_set_chan_nomac(channel: u8, idk: u8);
+    fn phy_set_most_tpw(max_txpwr: i8) -> c_void;
+}
 pub struct DsWiFiClientManager {
     pub clients: [Option<DsWiFiClient>; MAX_CLIENTS],
     pub all_clients_mask: DsWifiClientMask,
@@ -376,8 +380,15 @@ pub fn new_ds_wifi_interface<'vif, 'foa>(
     let (interface_control, interface_rx_queue) = virtual_interface.split();
     let mac_address = interface_control.get_factory_mac_for_interface();
 
+    interface_control.lock_channel(7).expect("TODO: panic message");
+    unsafe {
+        phy_set_most_tpw(20);
+
+
+        chip_v7_set_chan_nomac(7,0);
+    }
     interface_control.set_filter_parameters(BSSID,mac_address,None);
-    interface_control.set_filter_parameters(ReceiverAddress,mac_address,Some([0xff;6]));
+    interface_control.set_filter_parameters(ReceiverAddress,mac_address,Some([0x00;6]));
 
     interface_control.set_filter_status(BSSID,true);
     interface_control.set_filter_status(ReceiverAddress,true);

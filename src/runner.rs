@@ -538,7 +538,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
     }
 
     async fn interface_input(&self, borrowed_buffer: BorrowedBuffer<'foa>) {
-        info!("InterfaceInput: {} {:x}",borrowed_buffer.rssi(), borrowed_buffer.mpdu_buffer());
+        //info!("InterfaceInput: {} {:x}",borrowed_buffer.rssi(), borrowed_buffer.mpdu_buffer());
         let rx = Instant::now();
         let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
             return;
