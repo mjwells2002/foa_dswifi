@@ -52,10 +52,6 @@ async fn dswifi_task(mut sta_runner: DsWiFiRunner<'static, 'static>) -> ! {
     sta_runner.run().await
 }
 
-extern "C" {
-    fn phy_set_most_tpw(max_txpwr: i8) -> c_void;
-}
-
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default());
@@ -67,6 +63,9 @@ async fn main(spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
+    /* do not make the dswifi interface any interface other than 0
+        see https://github.com/esp32-open-mac/esp-wifi-hal/issues/5 for why
+     */
     let stack_resources = mk_static!(FoAResources, FoAResources::new());
     let ([ds_vif, ..], foa_runner) = foa::init(
         stack_resources,
@@ -76,18 +75,6 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(foa_task(foa_runner)).unwrap();
 
-    // agc doenst really work correctly with my usecase here,
-    // limit the max tx power to avoid it cycling insanely high and insanely low
-    // this probably has unintended side effects
-    unsafe { phy_set_most_tpw(8); }
-
-    /*
-    let (mut sta_control, sta_runner, net_device) = foa_sta::new_sta_interface(
-        mk_static!(VirtualInterface<'static>, sta_vif),
-        sta_resources,
-        None,
-    );
-     */
     let ds_resources = mk_static!(DsWiFiSharedResources<'static>, DsWiFiSharedResources::default());
     let (ds_control,ds_runner) = foa_dswifi::new_ds_wifi_interface(
         mk_static!(VirtualInterface<'static>, ds_vif),

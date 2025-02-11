@@ -22,6 +22,7 @@ use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer};
 use foa::{VirtualInterface};
 use foa::esp_wifi_hal::BorrowedBuffer;
+use foa::esp_wifi_hal::RxFilterBank::{ReceiverAddress, BSSID};
 use foa::lmac::{LMacInterfaceControl};
 use hex_literal::hex;
 use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FCFFlags, FrameType, ManagementFrameSubtype, SequenceControl};
@@ -374,6 +375,13 @@ pub fn new_ds_wifi_interface<'vif, 'foa>(
 {
     let (interface_control, interface_rx_queue) = virtual_interface.split();
     let mac_address = interface_control.get_factory_mac_for_interface();
+
+    interface_control.set_filter_parameters(BSSID,mac_address,None);
+    interface_control.set_filter_parameters(ReceiverAddress,mac_address,Some([0xff;6]));
+
+    interface_control.set_filter_status(BSSID,true);
+    interface_control.set_filter_status(ReceiverAddress,true);
+
     (
         DsWiFiControl {
             data_rx: shared_resources.data_queue.dyn_receiver(),
