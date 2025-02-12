@@ -3,7 +3,7 @@ use core::future::{join, Future};
 use core::intrinsics::{black_box, unreachable};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU16, Ordering};
-use defmt::{debug, error, info, warn};
+use defmt::{debug, error, info, trace, warn};
 use embassy_futures::join::join;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
@@ -420,14 +420,11 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 return;
             }
 
-            if !client_manager.last_mask.is_empty() {
-                client_manager.last_mask
+            if !client_manager.current_mask.is_empty() {
+                client_manager.current_mask.clone()
             } else {
-                self.data_tx_signal.signal(FrameRequired);
-
-                self.data_tx_signal_2.wait().await;
-                self.data_tx_signal_2.reset();
-                client_manager.all_clients_mask
+                warn!("frame generation failed");
+                client_manager.all_clients_mask.clone()
             }
         };
 
@@ -488,7 +485,6 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
 
         //TODO: this still isnt right, but it works most of the time
-        //180us is the average observed queue latency from rx to processing
         let mut timeout = Timer::after_micros(((max_client_ack_wait_micros * 5) * (mask.num_clients() as u16)) as u64);
 
         while !mask.is_empty() {
@@ -499,8 +495,6 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                     if let Some(client) = client_manager.get_client_mut(ack_from) {
                         let ack = Instant::now();
                         debug!("ack latency: {} / {}", (ack - tx).as_micros(), (ack - ack_enqueue_time).as_micros());
-                        let aapl = (ack - tx).as_micros() - (ack - ack_enqueue_time).as_micros() - 216;
-                        debug!("adjusted ack processing latency {}",aapl);
                         Timer::after_micros(450).await;
                         self.send_ack().await;
                         client.last_heard_from = Instant::now();
@@ -509,6 +503,31 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 }
             }
         }
+
+        trace!("mask {:?}",mask);
+        if mask.is_empty() {
+            debug!("signalling FrameRequired");
+            self.data_tx_signal.signal(FrameRequired);
+
+            self.data_tx_signal_2.wait().await;
+            self.data_tx_signal_2.reset();
+
+        }
+
+        {
+            let mut client_manager = self.client_manager.lock().await;
+
+            if client_manager.all_clients_mask.is_empty() {
+                return;
+            }
+
+             if mask.is_empty() {
+                 client_manager.current_mask = client_manager.all_clients_mask;
+             } else {
+                 client_manager.current_mask = mask;
+             }
+        }
+
     }
     async fn handle_control(&self) {
         let request = self.control_responder.wait_for_request().await;

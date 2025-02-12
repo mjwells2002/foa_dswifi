@@ -108,7 +108,7 @@ extern "C" {
 pub struct DsWiFiClientManager {
     pub clients: [Option<DsWiFiClient>; MAX_CLIENTS],
     pub all_clients_mask: DsWifiClientMask,
-    pub last_mask: DsWifiClientMask,
+    pub current_mask: DsWifiClientMask,
 }
 impl DsWiFiClientManager {
     pub fn get_next_client_aid(&self) -> Option<AssociationID> {
@@ -262,7 +262,7 @@ impl Default for DsWiFiSharedResources<'_> {
             client_manager: Mutex::from(DsWiFiClientManager {
                 clients: [None; MAX_CLIENTS],
                 all_clients_mask: 0x0000,
-                last_mask: 0,
+                current_mask: 0,
 
             }),
             bg_rx_queue: Channel::new(),
