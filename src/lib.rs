@@ -382,9 +382,10 @@ pub fn new_ds_wifi_interface<'vif, 'foa>(
 
     interface_control.lock_channel(7).expect("TODO: panic message");
     unsafe {
+        //workaround for power cycling
         phy_set_most_tpw(20);
 
-
+        //workaround for channel setting
         chip_v7_set_chan_nomac(7,0);
     }
     interface_control.set_filter_parameters(BSSID,mac_address,None);
