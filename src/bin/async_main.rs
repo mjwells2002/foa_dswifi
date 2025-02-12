@@ -9,6 +9,7 @@ use embassy_executor::Spawner;
 use embassy_sync::channel::Channel;
 use embassy_sync::mutex::Mutex;
 use esp_hal::{rng::Rng, timer::timg::TimerGroup};
+use esp_hal::clock::CpuClock::_240MHz;
 use esp_println::println;
 use foa::bg_task::FoARunner;
 use foa::{FoAResources, VirtualInterface};
@@ -54,7 +55,7 @@ async fn dswifi_task(mut sta_runner: DsWiFiRunner<'static, 'static>) -> ! {
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default());
+    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_240MHz));
 
     init_heap();
 
