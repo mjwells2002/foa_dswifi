@@ -24,7 +24,7 @@ esp-println = { version = "0.13.0", features = ["defmt-espflash","critical-secti
 
 # Embassy dependencies
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
-embassy-executor = { version = "0.7.0", features = ["defmt"] }
+embassy-executor = { version = "0.7.0", features = ["defmt", "task-arena-size-8192"] }
 
 # Misc
 #log = "0.4.21"

@@ -145,7 +145,9 @@ impl Default for PictochatType45 {
 
 pub struct PictochatType1 {
     pub header: PictochatHeader,
-    pub console_id: DsWifiClientMask,
+    //pub console_id: DsWifiClientMask,
+    pub sender_id: u8,
+    pub data_type: u8,
     pub magic_1: [u8;2],
     pub data_size: u16,
     pub magic_2: [u8;10],
@@ -158,7 +160,8 @@ impl Default for PictochatType1 {
                 type_id: 1,
                 size_with_header: 20,
             },
-            console_id: 0,
+            sender_id: 0,
+            data_type: 0,
             magic_1: [0xff, 0xff],
             data_size: 0,
             magic_2: [0x00, 0x00,
@@ -172,7 +175,8 @@ impl MeasureWith<()> for PictochatType1 {
     fn measure_with(&self, ctx: &()) -> usize {
         let mut size = 0;
         size += self.header.measure_with(ctx);
-        size += 2; //console_id
+        size += 1; //sender_id
+        size += 1; //data_type
         size += self.magic_1.len();
         size += 2; //data size
         size += self.magic_2.len();
@@ -186,7 +190,8 @@ impl TryIntoCtx<()> for PictochatType1 {
     fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
         buf.gwrite_with(self.header, &mut offset, ctx)?;
-        buf.gwrite_with(self.console_id, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.sender_id, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.data_type, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.magic_1, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.data_size, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.magic_2, &mut offset, Endian::Little)?;
@@ -202,7 +207,8 @@ impl TryFromCtx<'_, ()> for PictochatType1 {
         let mut offset = 0;
         Ok((Self {
             header: from.gread_with(&mut offset, ctx)?,
-            console_id: from.gread_with(&mut offset, Little)?,
+            sender_id: from.gread_with(&mut offset, Little)?,
+            data_type: from.gread_with(&mut offset, Little)?,
             magic_1: from.gread_with(&mut offset, Little)?,
             data_size: from.gread_with(&mut offset, Little)?,
             magic_2: from.gread_with(&mut offset, Little)?,
@@ -217,6 +223,7 @@ pub struct PictochatType2 {
     //payload_length: u8,
     pub transfer_flags: u8,
     pub write_offset: u16,
+    pub magic: [u8;2],
     //todo: do something better
     pub payload: Vec<u8>,
 }
@@ -230,6 +237,7 @@ impl MeasureWith<()> for PictochatType2 {
         size += 1; //payload_length
         size += 1; //transfer_flags
         size += 2; //write_offset;
+        size += 2; //magic;
         size += self.payload.len(); //payload
 
         size
@@ -247,6 +255,7 @@ impl TryIntoCtx<()> for PictochatType2 {
         buf.gwrite_with(self.payload.len() as u8, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.transfer_flags, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.write_offset, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.magic, &mut offset, Endian::Little)?;
         buf.gwrite_with(self.payload.as_slice(), &mut offset, ctx)?;
 
         Ok(offset)
@@ -264,6 +273,7 @@ impl TryFromCtx<'_, ()> for PictochatType2 {
         let payload_length: u8 = from.gread_with(&mut offset, Little)?;
         let transfer_flags: u8 = from.gread_with(&mut offset, Little)?;
         let write_offset: u16 = from.gread_with(&mut offset, Little)?;
+        let magic: [u8; 2] = from.gread_with(&mut offset, Little)?;
         let mut payload = vec![0u8; payload_length as usize];
         payload.copy_from_slice(&from[offset..offset+payload_length as usize]);
         offset += payload_length as usize;
@@ -273,13 +283,14 @@ impl TryFromCtx<'_, ()> for PictochatType2 {
             payload_type,
             transfer_flags,
             write_offset,
+            magic,
             payload,
         }, offset))
     }
 }
 
 //TODO: figure out the text encoding, its 16 bit width, and the lower 7 bits seem ascii compatible, and its not utf-16le
-#[derive(Debug,Eq,PartialEq)]
+#[derive(Debug,Eq,PartialEq,Clone)]
 pub struct ConsoleIdPayload {
     pub magic: [u8;2],
     pub to: MACAddress,
@@ -289,7 +300,19 @@ pub struct ConsoleIdPayload {
     pub birth_day: u8,
     pub birth_month: u8,
 }
-
+impl ConsoleIdPayload {
+    pub fn write_name(&mut self, name: &str) {
+        //TODO: text is unknown encoding, its lower 7 bits are ascii encoding and char size is 16 bit
+        // this is close enough for ascii only
+        let utf8_bytes = name.as_bytes();
+        if utf8_bytes.len() >= (self.name.len()/2) {
+            panic!("write_name too long!");
+        }
+        for i in 0..utf8_bytes.len() {
+            self.name[i*2] = utf8_bytes[i];
+        }
+    }
+}
 impl Default for ConsoleIdPayload {
     fn default() -> Self {
         Self {
@@ -404,6 +427,37 @@ impl TryIntoCtx<()> for MessagePayload {
     }
 }
 
+impl TryFromCtx<'_, ()> for MessagePayload {
+    type Error = scroll::Error;
+
+    fn try_from_ctx(from: &[u8], ctx: ()) -> Result<(Self, usize), Self::Error> {
+        let mut offset = 0;
+        let magic = from.gread_with(&mut offset, Little)?;
+        let mut mac = [0u8;6];
+        let subtype = from.gread_with(&mut offset, Endian::Little)?;
+
+        for o in (0..6).step_by(2) {
+            mac[o+1] = from.gread_with(&mut offset, Little)?;
+            mac[o] = from.gread_with(&mut offset, Little)?;
+        }
+
+        let magic_1 = from.gread_with(&mut offset, Little)?;
+        let safezone = from.gread_with(&mut offset, Little)?;
+        let remain = from.len() - offset;
+        let mut message = vec![0u8; remain];
+        message.as_mut_slice().copy_from_slice(&from[offset..]);
+        offset += remain;
+
+        Ok((Self {
+            magic,
+            subtype,
+            from: MACAddress::from(mac),
+            magic_1,
+            safezone,
+            message,
+        }, offset))
+    }
+}
 impl MeasureWith<()> for MessagePayload {
     fn measure_with(&self, ctx: &()) -> usize {
         let mut size = 0;

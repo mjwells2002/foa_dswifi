@@ -194,6 +194,8 @@ pub trait DsWifiClientMaskMath {
     fn mask_subtract(&mut self, other: DsWifiClientMask) -> DsWifiClientMask;
     fn num_clients(&self) -> u8;
     fn is_empty(&self) -> bool;
+    fn increment_client(&mut self) -> DsWifiClientMask;
+    fn from_client_num(num: u8) -> DsWifiClientMask;
 }
 impl DsWifiClientMaskMath for DsWifiClientMask {
     fn mask_add(&mut self, other: DsWifiClientMask) -> DsWifiClientMask {
@@ -212,6 +214,15 @@ impl DsWifiClientMaskMath for DsWifiClientMask {
 
     fn is_empty(&self) -> bool {
         *self == 0x00u16
+    }
+
+    fn increment_client(&mut self) -> DsWifiClientMask {
+        *self = *self << 1;
+        *self
+    }
+
+    fn from_client_num(num: u8) -> DsWifiClientMask {
+        1 << num
     }
 }
 pub trait DsWifiAidClientMaskBits {
@@ -249,7 +260,7 @@ pub struct DsWiFiSharedResources<'res> {
     ack_rx_queue: Channel<NoopRawMutex, (MACAddress, Instant), 4>,
 
     data_tx_mutex: Mutex<NoopRawMutex,PendingDataFrame>,
-    data_queue: Channel<NoopRawMutex, ([u8;300], MACAddress, u16), 4>,
+    data_queue: Channel<NoopRawMutex, ([u8;300],DsWifiClientMask, MACAddress, u16), 4>,
     data_tx_signal: Signal<NoopRawMutex, DsWiFiControlEvent>,
     data_tx_signal_2: Signal<NoopRawMutex, DsWiFiControlEvent>,
     control_channel: RequestResponseSignal<DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse>,
@@ -287,7 +298,7 @@ pub enum DsWiFiControlEvent {
     FrameGenerated,
 }
 pub struct DsWiFiControl<'res> {
-    pub data_rx: DynamicReceiver<'res,([u8;300], MACAddress, u16)>,
+    pub data_rx: DynamicReceiver<'res,([u8;300], DsWifiClientMask, MACAddress, u16)>,
     pub data_tx_mutex: &'res Mutex<NoopRawMutex, PendingDataFrame>,
     pub data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
     pub data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,

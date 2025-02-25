@@ -10,7 +10,7 @@ use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Ticker, Timer};
+use embassy_time::{Duration, Instant, Ticker, TimeoutError, Timer, WithTimeout};
 use foa::esp_wifi_hal::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::lmac::{LMacError, LMacInterfaceControl, OffChannelRequest};
 use foa::RxQueueReceiver;
@@ -27,7 +27,7 @@ use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, A
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::ctx::TryFromCtx;
 use ieee80211::scroll::Pwrite;
-use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
+use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMask, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
 use crate::DsWiFiControlEvent::FrameRequired;
 use crate::DsWiFiInterfaceControlEventResponse::{Failed, Success};
 use crate::packets::{BeaconType, ClientToHostDataFrame, DSWiFiBeaconTag, HostToClientDataFrame, HostToClientFlags, HostToClientFooter};
@@ -55,7 +55,7 @@ pub struct DsWiFiRunner<'vif,'foa> {
     pub(crate) interface_rx_queue: &'vif mut RxQueueReceiver<'foa>,
     pub(crate) bg_rx_queue_sender: DynamicSender<'vif, BorrowedBuffer<'foa>>,
     pub(crate) ack_rx_queue_sender: DynamicSender<'vif, (MACAddress, Instant)>,
-    pub(crate) data_rx_queue_sender: DynamicSender<'vif,([u8;300], MACAddress, u16)>,
+    pub(crate) data_rx_queue_sender: DynamicSender<'vif,([u8;300],DsWifiClientMask, MACAddress, u16)>,
 }
 
 /* ChatGPT wrote these 2 functions, it may be wrong */
@@ -177,7 +177,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
     }
 
     async fn handle_assoc_req_frame(&self, assoc: AssociationRequestFrame<'_>) {
-        info!("assoc request");
+        //info!("assoc request");
         let mut client_manager = self.client_manager.lock().await;
 
         let client = client_manager.get_client(assoc.header.transmitter_address).unwrap();
@@ -413,20 +413,30 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         ticker.next().await;
 
 
-        let mut mask = {
+        let (mut mask,all) = {
             let client_manager = self.client_manager.lock().await;
 
             if client_manager.all_clients_mask.is_empty() {
                 return;
             }
 
-            if !client_manager.current_mask.is_empty() {
-                client_manager.current_mask.clone()
-            } else {
-                warn!("frame generation failed");
-                client_manager.all_clients_mask.clone()
-            }
+            (client_manager.current_mask.clone(),client_manager.all_clients_mask.clone())
         };
+
+        if mask.is_empty() {
+            match self.data_tx_signal_2.wait().with_timeout(Duration::from_millis(1)).await {
+                Ok(_) => {
+                    mask = all;
+                    self.data_tx_signal_2.reset();
+                }
+                Err(_) => {
+                    //warn!("no frame ready");
+                    self.data_tx_signal.signal(FrameRequired);
+                    return;
+                }
+            };
+            debug!("got frame");
+        }
 
 
         let payload = self.data_tx_mutex.lock().await;
@@ -489,7 +499,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         while !mask.is_empty() {
             match select(&mut timeout,self.ack_rx_queue.receive()).await {
-                Either::First(_) => { warn!("ack timeout"); break; }
+                Either::First(_) => { debug!("ack timeout"); break; }
                 Either::Second((ack_from,ack_enqueue_time)) => {
                     let mut client_manager = self.client_manager.lock().await;
                     if let Some(client) = client_manager.get_client_mut(ack_from) {
@@ -508,10 +518,6 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         if mask.is_empty() {
             debug!("signalling FrameRequired");
             self.data_tx_signal.signal(FrameRequired);
-
-            self.data_tx_signal_2.wait().await;
-            self.data_tx_signal_2.reset();
-
         }
 
         {
@@ -521,11 +527,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 return;
             }
 
-             if mask.is_empty() {
-                 client_manager.current_mask = client_manager.all_clients_mask;
-             } else {
-                 client_manager.current_mask = mask;
-             }
+            client_manager.current_mask = mask;
         }
 
     }
@@ -581,7 +583,11 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                                 //info!("ack delay: {}", (rx_ack - rx).as_micros());
                                 if c2h_frame.payload_size > 0 {
                                     let (frame,size) = c2h_frame.payload.unwrap();
-                                    self.data_rx_queue_sender.try_send((frame,generic_frame.address_2().unwrap(),size)).expect("todo")
+                                    let client_aid = {
+                                        let client_manager = self.client_manager.lock().await;
+                                        client_manager.get_client(generic_frame.address_2().unwrap()).unwrap().association_id
+                                    };
+                                    self.data_rx_queue_sender.try_send((frame, DsWifiClientMask::from(client_aid), generic_frame.address_2().unwrap(), size)).expect("todo")
                                 }
                             }
                             DataFrameReadPayload::AMSDU(_) => {}
@@ -604,7 +610,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 }
             }
             _ => {
-                warn!("Unknown Frame");
+                //warn!("Unknown Frame");
             }
         }
     }

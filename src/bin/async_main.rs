@@ -6,7 +6,8 @@ use core::ffi::c_void;
 use core::mem::MaybeUninit;
 use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
-use embassy_sync::channel::Channel;
+use embassy_futures::select::{select, Either};
+use embassy_sync::channel::{Channel, TrySendError};
 use embassy_sync::mutex::Mutex;
 use esp_hal::{rng::Rng, timer::timg::TimerGroup};
 use esp_hal::clock::CpuClock::_240MHz;
@@ -14,12 +15,12 @@ use esp_println::println;
 use foa::bg_task::FoARunner;
 use foa::{FoAResources, VirtualInterface};
 use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiClientMaskMath};
-use foa_dswifi::pictochat_application::{PictoChatApplication, PictoChatUserManager};
+use foa_dswifi::pictochat_application::{PictoChatApplication, PictoChatUserManager, PictochatInterfaceEvent, PictochatSharedData};
 use foa_dswifi::runner::DsWiFiRunner;
 
 use {esp_backtrace as _, defmt as _};
 
-const HEAP_SIZE: usize = 1 * 1024;
+const HEAP_SIZE: usize = 64 * 1024;
 
 fn init_heap() {
     static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
@@ -53,6 +54,11 @@ async fn dswifi_task(mut sta_runner: DsWiFiRunner<'static, 'static>) -> ! {
     sta_runner.run().await
 }
 
+#[embassy_executor::task]
+async fn pictochat_task(mut pictochat_app: PictoChatApplication<'static>) -> ! {
+    pictochat_app.run().await
+}
+
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_240MHz));
@@ -83,13 +89,33 @@ async fn main(spawner: Spawner) {
     );
     spawner.spawn(dswifi_task(ds_runner)).unwrap();
 
-    let mut pictochat_app = PictoChatApplication {
-        ds_wifi_control: ds_control,
-        user_state_manager: Mutex::new(PictoChatUserManager {
-            users: [const { None };15],
-        }),
-        state_queue: Channel::new(),
-    };
+    let pictochat_resources = mk_static!(PictochatSharedData, PictochatSharedData::default());
+    let (pictochat_app, pictochat_interface) = PictoChatApplication::new(ds_control, pictochat_resources).await;
 
-    pictochat_app.run().await;
+    spawner.spawn(pictochat_task(pictochat_app)).unwrap();
+
+    loop {
+        match select(pictochat_interface.inbound_queue.receive(),pictochat_interface.event_queue.receive()).await {
+            Either::First(message) => {
+                info!("got message len: {}",message.message.len())
+                //todo: sending messages
+                /*match pictochat_interface.outbound_queue.try_send(message) {
+                    Ok(_) => {}
+                    Err(_) => {
+                        warn!("something went wrong");
+                    }
+                }*/
+            }
+            Either::Second(event) => {
+                match event {
+                    PictochatInterfaceEvent::ClientConnected(id) => {
+                        info!("Client Joined {:?}", id.name)
+                    }
+                    PictochatInterfaceEvent::ClientDisconnected(id) => {
+                        info!("Client Left {:?}", id.name)
+                    }
+                }
+            }
+        }
+    }
 }
