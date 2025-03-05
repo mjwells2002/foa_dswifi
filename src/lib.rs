@@ -7,7 +7,7 @@ extern crate alloc;
 
 pub mod runner;
 mod packets;
-mod pictochat_packets;
+pub mod pictochat_packets;
 pub mod pictochat_application;
 
 use core::ffi::c_void;

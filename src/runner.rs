@@ -605,7 +605,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                     }
 
                     _ => {
-                        warn!("Unhandled data Frame");
+                        //warn!("Unhandled data Frame");
                     }
                 }
             }
@@ -620,7 +620,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         let mut beacon_ticker = Ticker::every(Duration::from_millis(100));
         let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
-        let mut data_rate_limit = Ticker::every(Duration::from_millis(33)); //very slow rate limit for now
+        let mut data_rate_limit = Ticker::every(Duration::from_millis(6)); //very slow rate limit for now
 
         join!(
             async {

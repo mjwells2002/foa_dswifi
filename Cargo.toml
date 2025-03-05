@@ -6,29 +6,18 @@ edition = "2021"
 
 [dependencies]
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32"]}
-
-# ESP-HAL dependencies
-esp-hal = { version = "0.23.1", features = [
-    "esp32", "defmt"
-] }
-esp-hal-embassy = { version = "0.6.0", features = [
-    "esp32", "defmt"
-] }
+esp-hal = { version = "0.23.1", features = ["esp32", "defmt"] }
+esp-hal-embassy = { version = "0.6.0", features = ["esp32", "defmt"] }
 esp-alloc = { version = "0.6.0", features = ["defmt"] }
-esp-backtrace = { version = "0.15.0", features = [
-    "esp32",
-    "panic-handler",
-    "defmt"
-] }
+esp-backtrace = { version = "0.15.0", features = ["esp32", "panic-handler", "defmt"] }
 esp-println = { version = "0.13.0", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
-
-# Embassy dependencies
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
-embassy-executor = { version = "0.7.0", features = ["defmt", "task-arena-size-8192"] }
-
-# Misc
-#log = "0.4.21"
-static_cell = { version = "2.1.0" }
+embassy-executor = { version = "0.7.0", features = ["defmt", "task-arena-size-16384"] }
+embassy-net = {version = "0.6.0", features = ["defmt", "tcp", "udp", "raw", "dhcpv4", "medium-ethernet", "dns", "proto-ipv4", "multicast"] }
+embassy-net-wiznet = {version = "0.2.0", features = ["defmt"]}
+embedded-hal-bus = { version = "0.1.0", features = ["async"] }
+embassy-net-esp-hosted = { version = "0.2.0", features = ["defmt"]}
+static_cell = { version = "2.1.0", features = ["nightly"] }
 ieee80211 = { git = "https://github.com/Frostie314159/ieee80211-rs", default-features = false, features = ["defmt"]}
 embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"

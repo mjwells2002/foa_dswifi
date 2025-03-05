@@ -6,12 +6,13 @@ use core::slice::SlicePattern;
 use defmt::{error, info, warn, Format};
 use embassy_futures::join::join3;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender, TrySendError};
+use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender, TryReceiveError, TrySendError};
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Duration, Ticker};
 use esp_hal::gpio::Event;
 use ieee80211::mac_parser::MACAddress;
 use ieee80211::scroll::{Endian, Pread, Pwrite};
+use ieee80211::scroll::ctx::MeasureWith;
 use crate::{DsWiFiClientEvent, DsWiFiControl, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWifiClientMask, DsWifiClientMaskMath};
 use crate::DsWiFiControlEvent::FrameGenerated;
 use crate::packets::HostToClientFlags;
@@ -20,6 +21,7 @@ use crate::pictochat_packets::{ConsoleIdPayload, MessagePayload, PictochatHeader
 use crate::runner::PendingDataFrame;
 
 const MAX_TRANSFER_SIZE: u16 = 20480;
+const MESSAGE_CHUNK_SIZE: u8 = 180;
 
 #[derive(PartialEq,Debug,Format,Clone)]
 pub enum PictochatHandshakePhase {
@@ -40,6 +42,7 @@ pub struct PictoChatUserManager {
     pub users: [Option<PictochatUser>; 15]
 }
 
+
 #[derive(Debug, Eq, PartialEq)]
 pub enum PictoChatState {
     Idle,
@@ -49,6 +52,7 @@ pub enum PictoChatState {
     IdentConsoleInternalStage24((MACAddress,[u8; 2])),
     RequestIdent(u8),
     EchoTransfer(Vec<u8>),
+    SendMessage(i32)
 }
 impl PictoChatUserManager {
     pub fn add_user(&mut self, user: PictochatUser) {
@@ -190,7 +194,20 @@ impl<'res> PictoChatApplication<'res> {
         if let Ok(state) = pending {
             state
         } else {
-            PictoChatState::Idle
+            match self.pictochat_external_interface.outbound_queue.try_receive() {
+                Ok(data) => {
+                    let mut inflight = self.inflight_data.lock().await;
+                    let len = data.measure_with(&());
+                    let mut p_inflight = vec![0u8; len];
+                    p_inflight.pwrite(data, 0).expect("TODO: panic message");
+                    inflight.inflight_data = Option::from(p_inflight);
+                    info!("about to send");
+                    PictoChatState::SendMessage(-1)
+                }
+                Err(_) => {
+                    PictoChatState::Idle
+                }
+            }
         }
     }
     async fn tx_wait_loop(&self) -> ! {
@@ -269,6 +286,66 @@ impl<'res> PictoChatApplication<'res> {
                     };
                     let written = tx_out.data.pwrite(ident, 0).unwrap();
                     tx_out.size = written as u16;
+                },
+                PictoChatState::SendMessage(offset) => {
+                    let mut inflight = self.inflight_data.lock().await;
+                    let tx_buf = inflight.inflight_data.take().unwrap();
+                    if offset < 0 {
+                        tx_out.flags = HostToClientFlags::from_bits(29).unwrap();
+                        let ident = PictochatType1 {
+                            sender_id: 0,
+                            data_size: tx_buf.len() as u16,
+                            magic_2: [0x00, 0x00,
+                                0x58, 0x2b, 0x00, 0x03,
+                                0xdb, 0xa2, 0xfa, 0xea],
+                            ..Default::default()
+                        };
+                        let written = tx_out.data.pwrite(ident, 0).unwrap();
+                        tx_out.size = written as u16;
+                        inflight.inflight_data = Some(tx_buf);
+                        self.state_queue.try_send(PictoChatState::SendMessage(0)).expect("TODO: panic message");
+                    } else {
+                        let data_size = if tx_buf.len() as u16 - (offset as u16) > MESSAGE_CHUNK_SIZE as u16 { MESSAGE_CHUNK_SIZE as u16 } else { tx_buf.len() as u16 - (offset as u16)  } as u16;
+                        let tx_buf_subslice = &tx_buf[offset as usize..][..data_size as usize];
+                        let is_last_fragment = offset as usize + data_size as usize >= tx_buf.len();
+                        let data_fragment = PictochatType2 {
+                            header: PictochatHeader {
+                                type_id: 2,
+                                size_with_header: 12 + data_size,
+                            },
+                            sending_console_id: 0,
+                            payload_type: if is_last_fragment {
+                                0x04
+                            } else {
+                                if offset == 0 {
+                                    0xff
+                                } else {
+                                    0x97
+                                }
+                            },
+                            transfer_flags: if is_last_fragment { 0x01 } else { 0x00 },
+                            write_offset: offset as u16,
+                            magic: [0x00,0x00],
+                            payload: tx_buf_subslice.to_vec()
+                        };
+                        tx_out.flags = if is_last_fragment {
+                            HostToClientFlags::from_bits(158).unwrap()
+                        } else {
+                            HostToClientFlags::from_bits(30).unwrap()
+                        };
+                        let written = tx_out.data.pwrite(data_fragment, 0).unwrap();
+                        tx_out.size = written as u16;
+                        if is_last_fragment {
+                            self.state_queue.try_send(PictoChatState::Idle).expect("TODO: panic message");
+                            info!("sent message");
+                        } else {
+                            self.state_queue.try_send(PictoChatState::SendMessage(offset + data_size as i32)).expect("TODO: panic message");
+                        }
+                        if !is_last_fragment {
+                            inflight.inflight_data = Some(tx_buf);
+                        }
+                    }
+
                 }
             }
 

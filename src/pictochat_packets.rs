@@ -386,6 +386,7 @@ impl TryFromCtx<'_, ()> for ConsoleIdPayload {
     }
 }
 
+#[derive(Clone, Debug, PartialEq)]
 pub struct MessagePayload {
     pub magic: u8,
     pub subtype: u8,
