@@ -24,7 +24,7 @@ use embassy_time::{Duration, Instant, Ticker, Timer};
 use foa::{VirtualInterface};
 use foa::esp_wifi_hal::BorrowedBuffer;
 use foa::esp_wifi_hal::RxFilterBank::{ReceiverAddress, BSSID};
-use foa::lmac::{LMacInterfaceControl};
+use foa::LMacInterfaceControl;
 use hex_literal::hex;
 use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FCFFlags, FrameType, ManagementFrameSubtype, SequenceControl};
 use ieee80211::{element_chain, match_frames, scroll, supported_rates, GenericFrame};

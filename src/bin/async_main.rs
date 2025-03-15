@@ -2,33 +2,36 @@
 #![no_main]
 #![feature(future_join)]
 #![feature(ip_from)]
+#![feature(int_roundings)]
 extern crate alloc;
 
-use alloc::vec;
+use alloc::string::ToString;
+use alloc::{format, vec};
 use alloc::vec::Vec;
+use core::cmp::min;
 use core::ffi::c_void;
 use core::mem::MaybeUninit;
+use block_device_adapters::{BufStream, BufStreamError};
 use defmt::{debug, error, info, warn};
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, select3, Either, Either3};
+use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_futures::yield_now;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
 use embassy_net_wiznet::chip::W5500;
 use embassy_net_wiznet::{Device, State};
 use embassy_sync::channel::{Channel, DynamicSender, TrySendError};
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Delay, Duration};
+use embassy_time::{Delay, Duration, Instant, Ticker, Timer};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-use esp_hal::{dma_buffers, dma_descriptors, rng::Rng, timer::timg::TimerGroup, Async};
+use esp_hal::{dma_buffers, dma_descriptors, ram, rng::Rng, timer::timg::TimerGroup, Async};
 use esp_hal::clock::CpuClock::_240MHz;
 use esp_hal::dma::{DmaPriority, DmaRxBuf, DmaTxBuf};
-use esp_hal::gpio::{GpioPin, Input, Level, Output, Pull};
-use esp_hal::peripherals::SPI2;
+use esp_hal::gpio::{GpioPin, Input, InputConfig, Level, Output, OutputConfig, Pull};
+use esp_hal::peripherals::{SPI2, SPI3};
 use esp_hal::spi::master::{Config, Spi, SpiDma, SpiDmaBus};
 use esp_hal::spi::Mode;
-use esp_hal::time::RateExtU32;
 use esp_println::println;
-use foa::bg_task::FoARunner;
+use foa::FoARunner;
 use foa::{FoAResources, VirtualInterface};
 use ieee80211::mac_parser::MACAddress;
 use static_cell::StaticCell;
@@ -42,27 +45,44 @@ use embassy_net::{
     DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
 };
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_io_async::Write;
+use embedded_fatfs::FsOptions;
+use embedded_io_async::{ErrorType, Read, Seek, SeekFrom, Write};
+use embedded_sdmmc::{Block, BlockDevice, BlockIdx, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
+use embedded_sdmmc::sdcard::Error;
+use esp_alloc::HeapStats;
 use esp_hal::uart::Uart;
 use {esp_backtrace as _, defmt as _};
 use foa_dswifi::pictochat_packets::MessagePayload;
+use embedded_storage::{ReadStorage, Storage};
+use esp_hal::gpio::Level::Low;
+use esp_hal::time::Rate;
+use esp_hal::xtensa_lx::timer::delay;
+use esp_storage::FlashStorage;
+use sdspi::SdSpi;
 
 //test network this is fine to be commited
 const WIFI_NETWORK: &str = "Inception";
 const WIFI_PASSWORD: &str = "l7TlGp6FeDZw7H";
 
-const HEAP_SIZE: usize = 32 * 1024;
+//const HEAP_SIZE: usize = 48 * 1024;
+const HEAP_2_SIZE: usize = 98 * 1000;
 
 fn init_heap() {
-    static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
+    //static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
+    #[link_section =".dram2_uninit"]
+    static mut HEAP_2: MaybeUninit<[u8; HEAP_2_SIZE]> = MaybeUninit::uninit();
 
     unsafe {
-        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
+        /*esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
             HEAP.as_mut_ptr() as *mut u8,
             HEAP_SIZE,
             esp_alloc::MemoryCapability::Internal.into(),
+        ));*/
+        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
+            HEAP_2.as_mut_ptr() as *mut u8,
+            HEAP_2_SIZE,
+            esp_alloc::MemoryCapability::Internal.into(),
         ));
-
     }
 }
 
@@ -122,7 +142,7 @@ async fn wait_for_config(stack: Stack<'static>) -> embassy_net::StaticConfigV4 {
 async fn esph_wifi_task(
     runner: embassy_net_esp_hosted::Runner<
         'static,
-        ExclusiveDevice<SpiDmaBus<'static, Async>, Output<'static>, NoDelay>,
+        ExclusiveDevice<Spi<'static, Async>, Output<'static>, NoDelay>,
         Input<'static>,
         Output<'static>,
     >,
@@ -131,12 +151,12 @@ async fn esph_wifi_task(
 }
 
 #[embassy_executor::task]
-async fn tcp_listen_task(stack: Stack<'static>, tx_channel: DynamicSender<'static, [u8;14]>) {
-    let mut rx_buffer = [0; 1000];
-    let mut tx_buffer = [0; 50];
-    let mut buf = [0; 1000];
+async unsafe fn tcp_listen_task(stack: Stack<'static>, tx_channel: DynamicSender<'static, [u8;14]>) {
+    let mut buf = vec![0u8; 1_000];
+    let mut sock_rx_buffer = vec![0u8; 25_000];
+    let mut sock_tx_buffer= vec![0u8; 25_000];
     loop {
-        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut rx_buffer, &mut tx_buffer);
+        let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut sock_rx_buffer, &mut sock_tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(10)));
         info!("Listening on TCP:1234...");
         if let Err(e) = socket.accept(1234).await {
@@ -170,6 +190,21 @@ async fn tcp_listen_task(stack: Stack<'static>, tx_channel: DynamicSender<'stati
     }
 }
 
+#[derive(Default)]
+pub struct DummyTimesource();
+
+impl TimeSource for DummyTimesource {
+    fn get_timestamp(&self) -> Timestamp {
+        Timestamp {
+            year_since_1970: 0,
+            zero_indexed_month: 0,
+            zero_indexed_day: 0,
+            hours: 0,
+            minutes: 0,
+            seconds: 0,
+        }
+    }
+}
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_240MHz));
@@ -181,36 +216,141 @@ async fn main(spawner: Spawner) {
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
 
+    /*
+    let spi3_sclk = peripherals.GPIO17;
+    let spi3_miso = peripherals.GPIO19;
+    let spi3_mosi = peripherals.GPIO22 ;
+    let mut spi3_cs = Output::new(peripherals.GPIO5, Level::High, OutputConfig::default());
+
+    //let spi3_dma_ch = peripherals.DMA_SPI2;
+    //let (spi3_rx_buffer, spi3_rx_descriptors, spi3_tx_buffer, spi3_tx_descriptors) = dma_buffers!(4000);
+    //let spi3_dma_rx_buf = DmaRxBuf::new(spi3_rx_descriptors, spi3_rx_buffer).unwrap();
+    //let spi3_dma_tx_buf = DmaTxBuf::new(spi3_tx_descriptors, spi3_tx_buffer).unwrap();
+
+    let mut spi3 = Spi::new(
+        peripherals.SPI3,
+        Config::default()
+            .with_frequency(Rate::from_khz(400))
+            .with_mode(Mode::_0),
+    ).unwrap()
+        .with_sck(spi3_sclk)
+        .with_mosi(spi3_mosi)
+        .with_miso(spi3_miso)
+        //.with_dma(spi3_dma_ch)
+        //.with_buffers(spi3_dma_rx_buf, spi3_dma_tx_buf)
+        .into_async();
+    loop {
+        match sdspi::sd_init(&mut spi3, &mut spi3_cs).await {
+            Ok(_) => break,
+            Err(e) => {
+                warn!("Sd init error: {:?}", e);
+                embassy_time::Timer::after_millis(10).await;
+            }
+        }
+    }
+    let sd_spi = ExclusiveDevice::new(spi3, spi3_cs, embassy_time::Delay).unwrap();
+    let mut sd = SdSpi::<_, _, aligned::A1>::new(sd_spi, embassy_time::Delay);
+    loop {
+        let res = sd.init().await;
+        if res.is_ok() {
+            info!("SD Initialization complete!");
+            sd.spi()
+                .bus_mut().apply_config(&Config::default()
+                .with_frequency(Rate::from_mhz(20))
+                .with_mode(Mode::_0)).expect("Failed to increase bus speed");
+            break;
+        } else {
+            warn!("{:?}",res.expect_err("not possible"));
+        }
+        info!("Failed to init SD card, retrying...");
+
+        Timer::after_nanos(5000).await;
+
+    }
+    let inner = BufStream::<_, 512>::new(sd);
+    let fs = embedded_fatfs::FileSystem::new(inner, FsOptions::new()).await.unwrap();
+
+    let mut f = fs.root_dir().create_file("test.log").await.unwrap();
+    let hello = b"Hello world!";
+    info!("Writing to file...");
+    f.write_all(hello).await.unwrap();
+    f.flush().await.unwrap();
+
+    let mut buf = [0u8; 12];
+    f.rewind().await.unwrap();
+    f.read_exact(&mut buf[..]).await.unwrap();
+    info!(
+        "Read from file: {}",
+        core::str::from_utf8(&buf[..]).unwrap()
+    );
+    f.close().await.unwrap();
+
+     {
+            let mut f = fs.root_dir().create_file("iotest.bin").await.unwrap();
+            let mut write_size: usize = 0;
+            let write_buf = vec![0u8;32768];
+            let start = Instant::now();
+            while write_size <= 1_000_000 {
+                f.write_all(&write_buf).await.unwrap();
+                write_size = write_size + write_buf.len();
+            }
+            f.flush().await.unwrap();
+            let current = Instant::now();
+            let millis = (current-start).as_millis();
+            info!("Write {} Bytes in {}",write_size,millis);
+            let bps = write_size as f32 / (millis as f32 / 1000f32);
+            info!("Write BPS: {}",bps);
+     }
+     {
+            let mut f = fs.root_dir().open_file("iotest.bin").await.unwrap();
+            let mut read_size: usize = 0;
+            let mut read_buf = vec![0u8;32768];
+            let start = Instant::now();
+            loop {
+                let cur_read = f.read(&mut read_buf).await.unwrap();
+                read_size += cur_read;
+                if cur_read == 0 {
+                    break;
+                }
+            }
+            //f.flush().await.unwrap();
+            let current = Instant::now();
+            let millis = (current-start).as_millis();
+            info!("Read {} Bytes in {}",read_size,millis);
+            let bps = read_size as f32 / (millis as f32 / 1000f32);
+            info!("Read BPS: {}",bps);
+    }
+    */
 
     let sck = peripherals.GPIO14;
     let miso = peripherals.GPIO12;
     let mosi = peripherals.GPIO13;
-    let cs = Output::new(peripherals.GPIO15, Level::Low);
+    let cs = Output::new(peripherals.GPIO15, Level::Low, OutputConfig::default());
 
-    let esph_handshake = Input::new(peripherals.GPIO26, Pull::Up);
-    let esph_ready = Input::new(peripherals.GPIO25, Pull::None);
-    let esph_reset = Output::new(peripherals.GPIO33, Level::Low);
+    let esph_handshake = Input::new(peripherals.GPIO26, InputConfig::default().with_pull(Pull::Up));
+    let esph_ready = Input::new(peripherals.GPIO25, InputConfig::default().with_pull(Pull::None));
+    let esph_reset = Output::new(peripherals.GPIO33, Level::Low, OutputConfig::default());
 
-    let dma_channel = peripherals.DMA_SPI2;
+    let dma_channel = peripherals.DMA_SPI3;
 
-    let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(2000);
-    let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
-    let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
+    //let (rx_buffer, rx_descriptors, tx_buffer, tx_descriptors) = dma_buffers!(4000);
+    //let dma_rx_buf = DmaRxBuf::new(rx_descriptors, rx_buffer).unwrap();
+    //let dma_tx_buf = DmaTxBuf::new(tx_descriptors, tx_buffer).unwrap();
 
     let spi = Spi::new(
         peripherals.SPI2,
         Config::default()
-            .with_frequency(10.MHz())
+            .with_frequency(Rate::from_mhz(20))
             .with_mode(Mode::_1),
         ).unwrap()
         .with_sck(sck)
         .with_mosi(mosi)
         .with_miso(miso)
-        .with_dma(dma_channel)
-        .with_buffers(dma_rx_buf, dma_tx_buf)
+        //.with_dma(dma_channel)
+        //.with_buffers(dma_rx_buf, dma_tx_buf)
         .into_async();
 
-    let esph_spi_device = ExclusiveDevice::new_no_delay(spi, cs);
+    let esph_spi_device = ExclusiveDevice::new_no_delay(spi, cs).unwrap();
 
     static ESP_STATE: StaticCell<embassy_net_esp_hosted::State> = StaticCell::new();
     let (device, mut control, runner) = embassy_net_esp_hosted::new(
@@ -235,6 +375,7 @@ async fn main(spawner: Spawner) {
     );
 
     spawner.spawn(net_task(net_runner)).unwrap();
+
 
     info!("Waiting for DHCP...");
 
@@ -272,9 +413,10 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(tcp_listen_task(net_stack,channel.dyn_sender())).expect("TODO: panic message");
     let channel_rx = channel.dyn_receiver();
+    let mut ticker = Ticker::every(Duration::from_secs(15));
     loop {
-        match select3(pictochat_interface.inbound_queue.receive(),pictochat_interface.event_queue.receive(),channel_rx.receive()).await {
-            Either3::First(message) => {
+        match select4(pictochat_interface.inbound_queue.receive(),pictochat_interface.event_queue.receive(),channel_rx.receive(),ticker.next()).await {
+            Either4::First(message) => {
                 info!("got message len: {}",message.message.len());
                 //todo: sending messages
                 let mut out = message.clone();
@@ -290,7 +432,7 @@ async fn main(spawner: Spawner) {
                     }
                 }
             }
-            Either3::Second(event) => {
+            Either4::Second(event) => {
                 match event {
                     PictochatInterfaceEvent::ClientConnected(id) => {
                         info!("Client Joined {:?}", id.name)
@@ -300,7 +442,7 @@ async fn main(spawner: Spawner) {
                     }           
                 }
             },
-            Either3::Third(data) => {
+            Either4::Third(data) => {
                 let mut out = MessagePayload {
                     ..Default::default()
                 };
@@ -313,6 +455,10 @@ async fn main(spawner: Spawner) {
                         warn!("something went wrong");
                     }
                 }
+            },
+            Either4::Fourth(_) => {
+                let stats: HeapStats = esp_alloc::HEAP.stats();
+                println!("{}", stats);
             }
 
         }

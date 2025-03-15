@@ -1,33 +1,28 @@
-use core::cmp::PartialEq;
-use core::future::{join, Future};
-use core::intrinsics::{black_box, unreachable};
+use core::future::{join};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU16, Ordering};
 use defmt::{debug, error, info, trace, warn};
-use embassy_futures::join::join;
-use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
+use embassy_futures::select::{select, select3, select4, Either, Either3};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
-use embassy_time::{Duration, Instant, Ticker, TimeoutError, Timer, WithTimeout};
+use embassy_time::{Duration, Instant, Ticker, Timer, WithTimeout};
 use foa::esp_wifi_hal::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
-use foa::lmac::{LMacError, LMacInterfaceControl, OffChannelRequest};
-use foa::RxQueueReceiver;
+use foa::esp_wifi_hal::TxErrorBehaviour::Drop;
+use foa::{LMacInterfaceControl, RxQueueReceiver};
 use hex_literal::hex;
-use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameCF, DataFrameSubtype, FCFFlags, FrameType, IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl};
+use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FCFFlags, FrameType, IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl};
 use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
-use ieee80211::data_frame::builder::DataFrameBuilder;
 use ieee80211::data_frame::{DataFrame, DataFrameReadPayload};
 use ieee80211::data_frame::header::DataFrameHeader;
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
-use ieee80211::elements::rates::SupportedRatesElement;
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
 use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, AuthenticationFrame, BeaconFrame, DeauthenticationFrame, ManagementFrameHeader};
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
-use ieee80211::scroll::ctx::TryFromCtx;
+use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx};
 use ieee80211::scroll::Pwrite;
-use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiAidClientMaskBits, DsWifiClientMask, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
+use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWifiAidClientMaskBits, DsWifiClientMask, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
 use crate::DsWiFiControlEvent::FrameRequired;
 use crate::DsWiFiInterfaceControlEventResponse::{Failed, Success};
 use crate::packets::{BeaconType, ClientToHostDataFrame, DSWiFiBeaconTag, HostToClientDataFrame, HostToClientFlags, HostToClientFooter};
@@ -101,16 +96,7 @@ fn calculate_payload_time(rate_mbps: u16, frame_size: usize) -> u16 {
 }
 /* I hope it's not though */
 
-fn ds_tx_params_for_dataframe(rate: WiFiRate, frame_size: usize, tx_error_behaviour: TxErrorBehaviour) -> TxParameters {
-    let air_duration = calculate_air_duration(rate, frame_size);
-    TxParameters {
-        rate,
-        duration: air_duration,
-        override_seq_num: true,
-        tx_error_behaviour,
-        tx_timeout: 0,
-    }
-}
+
 impl<'foa> DsWiFiRunner<'_,'foa> {
     async fn handle_auth_frame(&self, auth: AuthenticationFrame<'_>) {
         if auth.body.authentication_algorithm_number != IEEE80211AuthenticationAlgorithmNumber::OpenSystem {
@@ -148,6 +134,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 transmitter_address: MACAddress::from(self.mac_address),
                 bssid: MACAddress::from(self.mac_address),
                 sequence_control: SequenceControl::new(),
+                duration: 248,
                 ..Default::default()
             },
             body: AuthenticationBody {
@@ -165,10 +152,9 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                duration: 248,
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
                 override_seq_num: true,
-                tx_timeout: 10,
+                ack_timeout: 10,
             },
             true
         ).await;
@@ -196,7 +182,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 transmitter_address: MACAddress::from(self.mac_address),
                 bssid: MACAddress::from(self.mac_address),
                 sequence_control: SequenceControl::new(),
-                duration: 162,
+                duration: 248,
                 ht_control: None,
             },
             body: AssociationResponseBody {
@@ -219,10 +205,9 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                duration: 248,
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
                 override_seq_num: true,
-                tx_timeout: 10,
+                ack_timeout: 10,
             },
             true
         ).await;
@@ -306,6 +291,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 transmitter_address: MACAddress::from(self.mac_address),
                 bssid: MACAddress::from(self.mac_address),
                 sequence_control: SequenceControl::new(),
+                duration: 0,
                 ..Default::default()
             },
             body: BeaconBody {
@@ -337,10 +323,9 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                duration: 0,
                 tx_error_behaviour: TxErrorBehaviour::Drop,
                 override_seq_num: true,
-                tx_timeout: 0,
+                ack_timeout: 0,
             }, false
         ).await;
 
@@ -378,10 +363,9 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
-                duration: 0,
                 tx_error_behaviour: TxErrorBehaviour::Drop,
                 override_seq_num: true,
-                tx_timeout: 0,
+                ack_timeout: 0,
             }, false
         ).await;
     }
@@ -445,7 +429,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         let max_client_ack_wait_micros = 998;
 
-        let frame = DataFrame {
+        let mut frame = DataFrame {
             header: DataFrameHeader {
                 subtype: DataFrameSubtype::DataCFPoll,
                 fcf_flags: FCFFlags::new().with_from_ds(true),
@@ -472,7 +456,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         };
 
         let mut buffer = self.interface_control.alloc_tx_buf().await;
-
+        let size = buffer.measure_with(&());
+        frame.header.duration = calculate_air_duration(WiFiRate::PhyRate2MS, size);
         let written  = buffer.pwrite_with(frame, 0, false).unwrap();
 
         while self.ack_rx_queue.try_receive().is_ok() {
@@ -482,7 +467,12 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         let tx_pre = Instant::now();
         let res = self.interface_control.transmit(
             &mut buffer[..written],
-            &ds_tx_params_for_dataframe(WiFiRate::PhyRate2MS, written, TxErrorBehaviour::RetryUntil(4)),
+            &TxParameters {
+                rate: WiFiRate::PhyRate2MS,
+                override_seq_num: true,
+                tx_error_behaviour: Drop,
+                ack_timeout: 0
+            },
             false
         ).await;
         let tx = Instant::now();
