@@ -9,8 +9,9 @@ ESP_HAL_CONFIG_XTAL_FREQUENCY="40"
 
 [build]
 rustflags = [
-  "-C", "link-arg=-nostartfiles",
+  "-C", "link-arg=-nostartfiles","-Z stack-protector=all"
 ]
+
 
 target = "xtensa-esp32-none-elf"
 
