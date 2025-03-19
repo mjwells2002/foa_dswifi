@@ -6,6 +6,7 @@
 #![feature(impl_trait_in_assoc_type)]
 extern crate alloc;
 
+use core::slice::from_raw_parts;
 use alloc::string::{String, ToString};
 use alloc::{format, vec};
 use alloc::boxed::Box;
@@ -14,22 +15,24 @@ use core::cell::UnsafeCell;
 use core::cmp::min;
 use core::ffi::c_void;
 use core::fmt::{Debug, Display};
-use core::mem::MaybeUninit;
+use core::mem::{transmute, MaybeUninit};
 use core::ops::Range;
-use core::slice;
+use core::{mem, slice};
+use core::hint::black_box;
+use core::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
+use core::str::FromStr;
 use block_device_adapters::{BufStream, BufStreamError};
 use defmt::{debug, error, info, warn};
+use edge_dhcp::server::{Server, ServerOptions};
 use edge_http::io::server::{Connection, DefaultServer, Handler};
 use edge_http::Method;
-use edge_nal_embassy::{Tcp, TcpAccept, TcpBuffers, TcpSocket};
+use edge_nal_embassy::{Tcp, TcpAccept, TcpBuffers, TcpSocket, UdpBuffers, UdpSocket};
 use ekv::{config, Database, FormatError, MountError, ReadError, ReadTransaction};
 use ekv::flash::PageID;
 use embassy_executor::Spawner;
 use embassy_futures::select::{select, select3, select4, Either, Either3, Either4};
 use embassy_futures::yield_now;
 use embassy_net::{Ipv4Address, Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
-use embassy_net_wiznet::chip::W5500;
-use embassy_net_wiznet::{Device, State};
 use embassy_sync::channel::{Channel, DynamicSender, TrySendError};
 use embassy_sync::mutex::Mutex;
 use embassy_time::{Delay, Duration, Instant, Ticker, Timer, WithTimeout};
@@ -71,18 +74,18 @@ use esp_hal::time::Rate;
 use esp_hal::xtensa_lx::timer::delay;
 use esp_storage::FlashStorage;
 use sdspi::SdSpi;
-use edge_nal::TcpBind;
-
-//test network this is fine to be commited
-const WIFI_NETWORK: &str = "Inception";
-const WIFI_PASSWORD: &str = "l7TlGp6FeDZw7H";
+use edge_nal::{TcpBind, UdpBind};
+use embassy_net_esp_hosted::{ApStatus, Security};
+use embassy_net_esp_hosted::Bandwidth::{Ht20, Ht40};
 
 const CONFIG_PART_START: usize = 0x3b0000;
 const CONFIG_PART_SIZE: usize = 0x4F000;
 const CONFIG_PART_RANGE: Range<usize> = CONFIG_PART_START..CONFIG_PART_START+CONFIG_PART_SIZE;
 
+const WEB_PAGE: &[u8] = include_bytes!("./index.html.gz");
+
 //const HEAP_SIZE: usize = 48 * 1024;
-const HEAP_2_SIZE: usize = 98 * 1000;
+const HEAP_2_SIZE: usize = 45 * 1000;
 fn init_heap() {
     //static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
     #[link_section =".dram2_uninit"]
@@ -94,6 +97,7 @@ fn init_heap() {
             HEAP_SIZE,
             esp_alloc::MemoryCapability::Internal.into(),
         ));*/
+
         esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
             HEAP_2.as_mut_ptr() as *mut u8,
             HEAP_2_SIZE,
@@ -104,10 +108,21 @@ fn init_heap() {
 
 macro_rules! mk_static {
     ($t:ty,$val:expr) => {{
-        static STATIC_CELL: static_cell::StaticCell<$t> = static_cell::StaticCell::new();
+        static STATIC_DRAM : static_cell::StaticCell<$t> = static_cell::StaticCell::new();
         #[deny(unused_attributes)]
-        let x = STATIC_CELL.uninit().write(($val));
+        let x = STATIC_DRAM.uninit().write(($val));
         x
+    }};
+}
+macro_rules! mk_static_dram2 {
+    ($t:ty,$val:expr) => {{
+        unsafe {
+            #[link_section =".dram2_uninit"]
+            static mut STATIC_DRAM2 : MaybeUninit<$t> = MaybeUninit::uninit();
+            #[deny(unused_attributes)]
+            let x = STATIC_DRAM2.write(($val));
+            x
+        }
     }};
 }
 
@@ -127,20 +142,7 @@ async fn pictochat_task(mut pictochat_app: PictoChatApplication<'static>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn ethernet_task(
-    mut runner: embassy_net_wiznet::Runner<
-        'static,
-        W5500,
-        ExclusiveDevice<SpiDmaBus<'static, Async>, Output<'static>, Delay>,
-        Input<'static>,
-        Output<'static>,
-    >,
-) -> ! {
-    runner.run().await
-}
-
-#[embassy_executor::task]
-async fn net_task(mut runner: embassy_net::Runner<'static, embassy_net_wiznet::Device<'static>>) -> ! {
+async fn net_task(mut runner: embassy_net::Runner<'static, embassy_net_esp_hosted::NetDriver<'static>>) -> ! {
     runner.run().await
 }
 
@@ -209,20 +211,56 @@ async fn tcp_listen_task(stack: Stack<'static>, tx_channel: DynamicSender<'stati
 #[embassy_executor::task]
 async fn http_listen_task(stack: Stack<'static>, ekv_db: &'static Database<CachedFlashWrapper,NoopRawMutex>) {
     let mut server = Box::new(DefaultServer::new());
-    let box_buffers = Box::new(TcpBuffers::<6,100,100>::new());
+    let box_buffers = Box::new(TcpBuffers::<4,1000,1000>::new());
     let tcp = edge_nal_embassy::Tcp::new(stack,&box_buffers);
     let tcp_accept = tcp.bind("0.0.0.0:80".parse().unwrap()).await.unwrap();
+
     let http_handler = HttpHandler {
         ekv_db
     };
     server.run(None, tcp_accept, http_handler).await.expect("?");
 }
 
+#[embassy_executor::task]
+async fn captive_portal_dns_task(stack: Stack<'static>) {
+    let mut tx_buf = [0; 1500];
+    let mut rx_buf = [0; 1500];
+    let box_buffers = Box::new(UdpBuffers::<2,500,500,2>::new());
+    let udp = edge_nal_embassy::Udp::new(stack,&box_buffers);
+    edge_captive::io::run(
+        &udp,
+        SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED), 53),
+        &mut tx_buf,
+        &mut rx_buf,
+        Ipv4Addr::new(10, 82, 50, 1),
+        core::time::Duration::from_secs(60),
+    ).await.unwrap();
+}
+
+#[embassy_executor::task]
+async fn dhcp_server_task(stack: Stack<'static>) {
+    let mut buf = [0; 1500];
+    let ip = Ipv4Addr::new(10, 82, 50, 1);
+    let box_buffers = Box::new(UdpBuffers::<2,500,500,2>::new());
+    let udp = edge_nal_embassy::Udp::new(stack,&box_buffers);
+    let mut socket = udp.bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED),edge_dhcp::io::DEFAULT_SERVER_PORT)).await.unwrap();
+    let mut gw_buf = [ip];
+    let mut dns_buf = [ip];
+    let mut server_opt = ServerOptions::new(ip, Some(&mut gw_buf));
+    server_opt.captive_url = Some("http://10.82.50.1");
+    server_opt.dns = &dns_buf;
+    edge_dhcp::io::server::run(
+        &mut Server::<_,16>::new_with_et(ip),
+        &server_opt,
+        &mut socket,
+        &mut buf
+    ).await.unwrap();
+}
 struct CachedFlashWrapper {
     range: Range<usize>,
-    page_cache: AlignedBuf<{ config::PAGE_SIZE }>,
-    page_cache_id: Option<u32>,
+    io_buffer: AlignedBuf<{ config::PAGE_SIZE }>,
 }
+
 #[repr(C, align(4))]
 struct AlignedBuf<const N: usize>([u8; N]);
 impl ekv::flash::Flash for CachedFlashWrapper {
@@ -237,14 +275,8 @@ impl ekv::flash::Flash for CachedFlashWrapper {
         if sector * config::PAGE_SIZE >= self.range.end {
             panic!("Attempt to erase out of bounds");
         }
-        if let Some(id) = self.page_cache_id {
-            if id == sector as u32 {
-                self.page_cache_id = None;
-            }
-        }
         unsafe {
             esp_storage::ll::spiflash_unlock().expect("Failed to unlock flash");
-
             match esp_storage::ll::spiflash_erase_sector(sector as u32) {
                 Ok(_) => {
                     Ok(())
@@ -262,20 +294,11 @@ impl ekv::flash::Flash for CachedFlashWrapper {
             panic!("cant read > 1 page")
         }
         let sector = self.range.start.div_floor(config::PAGE_SIZE) + page_id.index();
-        if let Some(id) = self.page_cache_id {
-            if id == sector as u32 {
-                data.copy_from_slice(&self.page_cache.0[offset..offset+data.len()]);
-                return Ok(());
-            }
-        }
         let address = page_id.index() * config::PAGE_SIZE + self.range.start;
-        let mut buf = AlignedBuf([0; config::PAGE_SIZE]);
         unsafe {
-            match esp_storage::ll::spiflash_read(address as u32, buf.0.as_mut_ptr() as *mut u32, buf.0.len() as u32) {
+            match esp_storage::ll::spiflash_read(address as u32, self.io_buffer.0.as_mut_ptr() as *mut u32, self.io_buffer.0.len() as u32) {
                 Ok(_) => {
-                    data.copy_from_slice(&buf.0[offset..offset+data.len()]);
-                    self.page_cache.0.copy_from_slice(&buf.0);
-                    self.page_cache_id = Some(sector as u32);
+                    data.copy_from_slice(&self.io_buffer.0[offset..offset+data.len()]);
                     Ok(())
                 }
                 Err(c) => {
@@ -284,6 +307,7 @@ impl ekv::flash::Flash for CachedFlashWrapper {
                 }
             }
         }
+
     }
 
     async fn write(&mut self, page_id: PageID, offset: usize, data: &[u8]) -> Result<(), Self::Error> {
@@ -291,17 +315,16 @@ impl ekv::flash::Flash for CachedFlashWrapper {
             panic!("cant write > 1 page")
         }
         let address = page_id.index() * config::PAGE_SIZE + self.range.start;
-        let mut buf = AlignedBuf([0; config::PAGE_SIZE]);
-        self.read(page_id, 0, &mut buf.0).await.expect("TODO: panic message");
-        buf.0[offset..offset+data.len()].copy_from_slice(data);
-        if let Some(id) = self.page_cache_id {
-            let sector = self.range.start.div_floor(config::PAGE_SIZE) + page_id.index();
-            if id == sector as u32 {
-                self.page_cache_id = None;
-            }
-        }
         unsafe {
-            match esp_storage::ll::spiflash_write(address as u32, buf.0.as_ptr() as *const u32, buf.0.len() as u32) {
+            match esp_storage::ll::spiflash_read(address as u32, self.io_buffer.0.as_mut_ptr() as *mut u32, self.io_buffer.0.len() as u32) {
+                Ok(_) => {}
+                Err(c) => {
+                    warn!("Read Error {}",c);
+                    return Err(c);
+                }
+            }
+            self.io_buffer.0[offset..offset+data.len()].copy_from_slice(data);
+            match esp_storage::ll::spiflash_write(address as u32, self.io_buffer.0.as_ptr() as *const u32, self.io_buffer.0.len() as u32) {
                 Ok(_) => {
                     Ok(())
                 }
@@ -367,6 +390,7 @@ impl Handler for HttpHandler {
     where
         T: Read + Write,
     {
+
         let method = conn.headers()?.method.clone();
         let path: Vec<_> = conn.headers()?.path.clone().split("/").collect();
         if path.len() > 2 {
@@ -403,13 +427,15 @@ impl Handler for HttpHandler {
                         } else {
                             conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
                         }
-                    } else if method == Method::Post {
+                    }
+                    else if method == Method::Post {
                         if path.len() > 3 {
                             let mut data = vec![0u8; 2048];
                             let body_size = conn.read(&mut data).await?;
+                            data.truncate(body_size);
                             let mut wtx = self.ekv_db.write_transaction().await;
 
-                            if let Ok(read_size) = wtx.write(path[3].as_bytes(),&data).await {
+                            if let Ok(_) = wtx.write(path[3].as_bytes(),&data).await {
                                 if let Ok(_) = wtx.commit().await {
                                     conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
                                     conn.write_all(&data).await?;
@@ -422,7 +448,8 @@ impl Handler for HttpHandler {
                         } else {
                             conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
                         }
-                    } else {
+                    }
+                    else {
                         conn.initiate_response(405, Some("Method Not Allowed"), &[("Connection","Close")]).await?;
 
                     }
@@ -437,13 +464,23 @@ impl Handler for HttpHandler {
             }
         }
         if conn.headers()?.path == "/" {
-            conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/html"),("Connection","Close")]).await?;
-            conn.write_all(b"Hello World").await?;
-            conn.flush().await?;
+            if let Some(accept_encoding) = conn.headers()?.headers.get("Accept-Encoding") {
+                if accept_encoding.contains("gzip") {
+                    conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/html"),("Content-Encoding","gzip"),("Connection","Close")]).await?;
+                    conn.write_all(WEB_PAGE).await?;
+                    conn.flush().await?;
+                } else {
+                    conn.initiate_response(406, Some("Not Acceptable"),&[("Content-Type", "text/html"),("Content-Encoding","gzip"),("Connection","Close")]).await?;
+                    conn.flush().await?;
+                }
+            } else {
+                conn.initiate_response(406, Some("Not Acceptable"),&[("Content-Type", "text/html"),("Content-Encoding","gzip"),("Connection","Close")]).await?;
+                conn.flush().await?;
+            }
         } else {
-            conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
+            conn.initiate_response(302, Some("Found"), &[("Connection","Close"),("Location","http://10.82.50.1/")]).await?;
         }
-
+        conn.complete().await?;
         Ok(())
     }
 }
@@ -466,13 +503,12 @@ async fn main(spawner: Spawner) {
 
     let flash = CachedFlashWrapper {
         range: CONFIG_PART_RANGE,
-        page_cache: AlignedBuf([0; config::PAGE_SIZE]),
-        page_cache_id: None,
+        io_buffer: AlignedBuf([0; config::PAGE_SIZE])
     };
 
     let mut ekv_config = ekv::Config::default();
     ekv_config.random_seed = rng.random();
-    let ekv_db = mk_static!(ekv::Database::<CachedFlashWrapper,NoopRawMutex>,ekv::Database::new(flash,ekv_config));
+    let ekv_db = mk_static_dram2!(ekv::Database::<CachedFlashWrapper,NoopRawMutex>,ekv::Database::new(flash,ekv_config));
 
     let mut should_erase = false;
 
@@ -515,17 +551,17 @@ async fn main(spawner: Spawner) {
     no_config = !read_key(&ekv_db,b"wifi_ssid", &mut wifi_ssid).await;
     is_open_network = !read_key(&ekv_db,b"wifi_psk", &mut wifi_password).await;
 
-    if no_config {
-        //TODO: config ap
-        info!("no config present in flash, writing default and restarting");
-        let mut wtx = ekv_db.write_transaction().await;
-        wtx.write(b"wifi_psk", WIFI_PASSWORD.as_bytes()).await.expect("TODO: panic message");
-        wtx.write(b"wifi_ssid", WIFI_NETWORK.as_bytes()).await.expect("TODO: panic message");
-        wtx.commit().await.expect("dontfailpls");
-        info!("restarting in 10 seconds");
-        Timer::after_secs(10).await;
-        software_reset();
-    }
+    // if no_config {
+    //     //TODO: config ap
+    //     info!("no config present in flash, writing default and restarting");
+    //     let mut wtx = ekv_db.write_transaction().await;
+    //     wtx.write(b"wifi_psk", WIFI_PASSWORD.as_bytes()).await.expect("TODO: panic message");
+    //     wtx.write(b"wifi_ssid", WIFI_NETWORK.as_bytes()).await.expect("TODO: panic message");
+    //     wtx.commit().await.expect("dontfailpls");
+    //     info!("restarting in 10 seconds");
+    //     Timer::after_secs(10).await;
+    //     software_reset();
+    // }
 
     //const KEY_COUNT: usize = 128;
     //const TX_SIZE: usize = 1;
@@ -721,9 +757,13 @@ async fn main(spawner: Spawner) {
     spawner.spawn(esph_wifi_task(runner)).unwrap();
 
     control.init().await.unwrap();
-    control.connect(&String::from_utf8(wifi_ssid).unwrap(), &String::from_utf8(wifi_password).unwrap()).await.unwrap();
+    if !no_config {
+        if let Err(_) = control.connect(&String::from_utf8(wifi_ssid).unwrap(), &String::from_utf8(wifi_password).unwrap()).await {
+            no_config = true;
+        }
+    }
 
-    let net_stack_resources = mk_static!(NetStackResources<6>, NetStackResources::new());
+    let net_stack_resources = mk_static_dram2!(NetStackResources<10>, NetStackResources::new());
     let (net_stack, net_runner) = embassy_net::new(
         device,
         embassy_net::Config::dhcpv4(DhcpConfig::default()),
@@ -733,11 +773,34 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(net_task(net_runner)).unwrap();
 
-    info!("Waiting for DHCP...");
+    if no_config {
+        net_stack.set_config_v4(embassy_net::ConfigV4::Static(StaticConfigV4 {
+            address: Ipv4Cidr::new(Ipv4Addr::from_octets([10,82,50,1]),24),
+            gateway: None,
+            dns_servers: Default::default(),
+        }));
+        spawner.spawn(dhcp_server_task(net_stack)).unwrap();
+        spawner.spawn(captive_portal_dns_task(net_stack)).unwrap();
+        info!("No Config, or unable to connect to WiFi, starting AP");
+        control.set_ap_mode().await.expect("TODO: panic message");
+        let mac = control.get_mac_addr().await.unwrap();
 
-    let cfg = wait_for_config(net_stack).await;
-    let local_addr = cfg.address.address();
-    info!("IP address: {:?}", local_addr);
+        control.start_ap(ApStatus {
+            //PictoThing-BE420
+            ssid: heapless::String::from_str(format!("PictoThing-{:02X}{:02X}{:02X}",mac[3],mac[4],mac[5]).as_ref()).unwrap(),
+            psk: heapless::String::from_str("").unwrap(),
+            channel: 11,
+            security: Security::Open,
+            max_connections: 8,
+            hidden: false,
+            bandwidth: Ht20,
+        }).await.expect("TODO: panic message");
+    } else {
+        info!("Waiting for DHCP...");
+        let cfg = wait_for_config(net_stack).await;
+        let local_addr = cfg.address.address();
+        info!("IP address: {:?}", local_addr);
+    }
 
     spawner.spawn(http_listen_task(net_stack,ekv_db)).expect("TODO: panic message");
 
@@ -745,7 +808,7 @@ async fn main(spawner: Spawner) {
         see https://github.com/esp32-open-mac/esp-wifi-hal/issues/5 for why
      */
 
-    let stack_resources = mk_static!(FoAResources, FoAResources::new());
+    let stack_resources = mk_static_dram2!(FoAResources, FoAResources::new());
     let ([ds_vif, ..], foa_runner) = foa::init(
         stack_resources,
         peripherals.WIFI,
@@ -763,11 +826,11 @@ async fn main(spawner: Spawner) {
     let mac = ds_control.mac_address.clone();
     spawner.spawn(dswifi_task(ds_runner)).unwrap();
 
-    let pictochat_resources = mk_static!(PictochatSharedData, PictochatSharedData::default());
+    let pictochat_resources = mk_static_dram2!(PictochatSharedData, PictochatSharedData::default());
     let (pictochat_app, pictochat_interface) = PictoChatApplication::new(ds_control, pictochat_resources).await;
 
     spawner.spawn(pictochat_task(pictochat_app)).unwrap();
-    let channel = mk_static!(Channel<NoopRawMutex,[u8;14],4>, Channel::new());
+    let channel = mk_static_dram2!(Channel<NoopRawMutex,[u8;14],4>, Channel::new());
 
     spawner.spawn(tcp_listen_task(net_stack,channel.dyn_sender())).expect("TODO: panic message");
     let channel_rx = channel.dyn_receiver();
