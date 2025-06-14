@@ -517,19 +517,13 @@ impl Handler for HttpHandler {
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    println!("Hello, world!");
-    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_80MHz));
-    println!("Got this far!");
-
+    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_240MHz));
     let mut rng = Rng::new(peripherals.RNG);
-    println!("RNG UP");
 
     init_heap();
-    println!("HEAP UP");
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
-    println!("TIMER UP");
 
     info!("Hello, world!");
     let mut i2c = I2c::new(
@@ -540,8 +534,6 @@ async fn main(spawner: Spawner) {
         .with_sda(peripherals.GPIO32)
         .with_scl(peripherals.GPIO33)
         .into_async();
-
-    println!("I2C UP");
 
     let mut display = display::DisplayManager::new(i2c,spawner);
 

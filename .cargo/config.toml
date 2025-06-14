@@ -9,7 +9,7 @@ ESP_HAL_CONFIG_PSRAM_MODE="quad"
 
 [build]
 rustflags = [
-  "-C", "link-arg=-nostartfiles","-Z", "stack-protector=all"
+  "-C", "link-arg=-nostartfiles"
 ]
 
 
