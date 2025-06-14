@@ -4,7 +4,7 @@ use ekv::{config, Database, FormatError, MountError, ReadError, ReadTransaction,
 use ekv::flash::PageID;
 use core::ops::Range;
 use defmt::{info, warn};
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
+use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use embassy_time::Instant;
 use esp_hal::system::software_reset;
 use crate::mk_static_dram2;

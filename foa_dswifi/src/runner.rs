@@ -155,6 +155,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
                 override_seq_num: true,
                 ack_timeout: 10,
+                key_slot: None,
             },
             true
         ).await;
@@ -208,6 +209,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 tx_error_behaviour: TxErrorBehaviour::RetryUntil(4),
                 override_seq_num: true,
                 ack_timeout: 10,
+                key_slot: None,
+
             },
             true
         ).await;
@@ -319,16 +322,21 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         let written = buffer.pwrite_with(frame, 0, false).unwrap();
 
-        let _ = self.interface_control.transmit(
+        let x = self.interface_control.transmit(
             &mut buffer[..written],
             &TxParameters {
                 rate: WiFiRate::PhyRate2MS,
                 tx_error_behaviour: TxErrorBehaviour::Drop,
                 override_seq_num: true,
                 ack_timeout: 0,
+                key_slot: None,
+
             }, false
         ).await;
 
+        if x.is_err() {
+            warn!("send beacon failed");
+        }
     }
 
     async fn send_deauth(&self, target: &[u8; 6]) {
@@ -366,6 +374,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 tx_error_behaviour: TxErrorBehaviour::Drop,
                 override_seq_num: true,
                 ack_timeout: 0,
+                key_slot: None,
+
             }, false
         ).await;
     }
@@ -471,7 +481,9 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 rate: WiFiRate::PhyRate2MS,
                 override_seq_num: true,
                 tx_error_behaviour: Drop,
-                ack_timeout: 0
+                ack_timeout: 0,
+                key_slot: None,
+
             },
             false
         ).await;
@@ -566,8 +578,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                     DataFrameSubtype::DataCFAck => {
                         //TODO: parse frame and extract the app payload (if present) and forward it to control layer
                         let frame = generic_frame.parse_to_typed::<DataFrame>().unwrap().unwrap();
-                        match frame.payload.unwrap() {
-                            DataFrameReadPayload::Single(data) => {
+                        match frame.payload {
+                            Some(data) => {
                                 let (c2h_frame,size) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
                                 let rx_ack = Instant::now();
                                 //info!("ack delay: {}", (rx_ack - rx).as_micros());
@@ -580,7 +592,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                                     self.data_rx_queue_sender.try_send((frame, DsWifiClientMask::from(client_aid), generic_frame.address_2().unwrap(), size)).expect("todo")
                                 }
                             }
-                            DataFrameReadPayload::AMSDU(_) => {}
+                            None => {}
                         }
                         if let Err(_) = self.ack_rx_queue_sender.try_send((generic_frame.address_2().unwrap(),Instant::now())) {
                             error!("Failed to send ack to runner");

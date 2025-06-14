@@ -44,9 +44,9 @@ use embassy_sync::mutex::Mutex;
 use embassy_time::{Delay, Duration, Instant, Ticker, Timer, WithTimeout};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
 use esp_hal::{dma_buffers, dma_descriptors, i2c, ram, rng::Rng, timer::timg::TimerGroup, Async};
-use esp_hal::clock::CpuClock::_240MHz;
+use esp_hal::clock::CpuClock::{_240MHz, _80MHz};
 use esp_hal::dma::{DmaPriority, DmaRxBuf, DmaTxBuf};
-use esp_hal::gpio::{GpioPin, Input, InputConfig, Level, Output, OutputConfig, Pull};
+use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
 use esp_hal::peripherals::{SDHOST, SPI2, SPI3};
 use esp_hal::spi::master::{Config, Spi, SpiDma, SpiDmaBus};
 use esp_hal::spi::Mode;
@@ -84,8 +84,7 @@ use edge_nal::{TcpBind, UdpBind};
 use edge_nal::io::ReadExactError;
 use ekv::Database;
 use embassy_net::udp::PacketMetadata;
-use embassy_net_esp_hosted::{ApStatus, Control, Security};
-use embassy_net_esp_hosted::Bandwidth::{Ht20, Ht40};
+use embassy_net_esp_hosted::{Control, Security};
 use embedded_graphics::Drawable;
 use embedded_graphics::geometry::{Point, Size};
 use embedded_graphics::mono_font::ascii::{FONT_4X6, FONT_6X10, FONT_6X13};
@@ -260,12 +259,7 @@ fn parse_handshake(handshake: [u8;3]) -> Result<u16,()> {
 
 #[embassy_executor::task]
 async fn server_connection_task(stack: Stack<'static>, tx_channel: DynamicSender<'static, Vec<u8>>, rx_channel: DynamicReceiver<'static, Vec<u8>>, display: DynamicSender<'static, DisplayUpdate>) {
-
-    // let dns_socket = DnsSocket::new(stack);
-    // let tcp_bin = dns_socket
-    //     .query("", embassy_net::dns::DnsQueryType::A)
-    //     .await
-    //     .expect("DNS lookup failure")[0];
+    let dns_socket = DnsSocket::new(stack);
 
     let mut sock_rx_buffer = vec![0u8; 5_000];
     let mut sock_tx_buffer = vec![0u8; 5_000];
@@ -274,14 +268,27 @@ async fn server_connection_task(stack: Stack<'static>, tx_channel: DynamicSender
     socket.set_timeout(Some(Duration::from_secs(120)));
 
     loop {
-        if socket.connect(IpEndpoint {
-            addr: IpAddress::v4(152,53,36,162),
-            port: 5812,
-        }).await.is_ok() {
-            info!("Connected to server!");
-            display.send(DisplayUpdate::SetCloudConnected(true)).await;
-            break;
+        let server = dns_socket
+            .query("hen.breadloaf.xyz", embassy_net::dns::DnsQueryType::A)
+            .await;
+
+        match server {
+            Ok(server) => {
+                info!("Found server: {:?}", server[0]);
+                if socket.connect(IpEndpoint {
+                    addr: server[0],
+                    port: 5812,
+                }).await.is_ok() {
+                    info!("Connected to server!");
+                    display.send(DisplayUpdate::SetCloudConnected(true)).await;
+                    break;
+                }
+            }
+            Err(e) => {
+                info!("Failed to find server: {:?}", e);
+            }
         }
+
         info!("Failed to connect to server, retrying! in 10 seconds");
         Timer::after_secs(10).await;
     }
@@ -376,7 +383,6 @@ async fn dhcp_server_task(stack: Stack<'static>) {
     ).await.unwrap();
 }
 
-
 struct HttpHandler {
     flash: &'static InternalFlash,
     control: Mutex<NoopRawMutex, Control<'static>>,
@@ -420,40 +426,40 @@ impl Handler for HttpHandler {
                 },
                 ("api","config") => {
                     if method == Method::Get {
-                        if path.len() > 3 {
-                            let mut data = vec![0u8; 2048];
-                            let rtx = self.flash.read_transaction().await;
-                            if let Ok(read_size) = rtx.read(path[3].as_bytes(),&mut data).await {
-                                conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
-                                data.truncate(read_size);
-                                conn.write_all(&data).await?;
-                            } else {
-                                conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
-                            }
-                        } else {
-                            conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
-                        }
+                        // if path.len() > 3 {
+                        //     let mut data = vec![0u8; 2048];
+                        //     let rtx = self.flash.read_transaction().await;
+                        //     if let Ok(read_size) = rtx.read(path[3].as_bytes(),&mut data).await {
+                        //         conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
+                        //         data.truncate(read_size);
+                        //         conn.write_all(&data).await?;
+                        //     } else {
+                        //         conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
+                        //     }
+                        // } else {
+                        //     conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
+                        // }
                     }
                     else if method == Method::Post {
-                        if path.len() > 3 {
-                            let mut data = vec![0u8; 2048];
-                            let body_size = conn.read(&mut data).await?;
-                            data.truncate(body_size);
-                            let mut wtx = self.flash.write_transaction().await;
-
-                            if let Ok(_) = wtx.write(path[3].as_bytes(),&data).await {
-                                if let Ok(_) = wtx.commit().await {
-                                    conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
-                                    conn.write_all(&data).await?;
-                                } else {
-                                    conn.initiate_response(500, Some("Internal Server Error"), &[("Connection","Close")]).await?;
-                                }
-                            } else {
-                                conn.initiate_response(500, Some("Internal Server Error"), &[("Connection","Close")]).await?;
-                            }
-                        } else {
-                            conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
-                        }
+                        // if path.len() > 3 {
+                        //     let mut data = vec![0u8; 2048];
+                        //     let body_size = conn.read(&mut data).await?;
+                        //     data.truncate(body_size);
+                        //     let mut wtx = self.flash.write_transaction().await;
+                        //
+                        //     if let Ok(_) = wtx.write(path[3].as_bytes(),&data).await {
+                        //         if let Ok(_) = wtx.commit().await {
+                        //             conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
+                        //             conn.write_all(&data).await?;
+                        //         } else {
+                        //             conn.initiate_response(500, Some("Internal Server Error"), &[("Connection","Close")]).await?;
+                        //         }
+                        //     } else {
+                        //         conn.initiate_response(500, Some("Internal Server Error"), &[("Connection","Close")]).await?;
+                        //     }
+                        // } else {
+                        //     conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
+                        // }
                     }
                     else {
                         conn.initiate_response(405, Some("Method Not Allowed"), &[("Connection","Close")]).await?;
@@ -462,14 +468,14 @@ impl Handler for HttpHandler {
 
                 },
                 ("api", "scan") => {
-                    let mut control = self.control.lock().await;
-                    let networks = control.get_scan_network_list().await.unwrap();
-                    conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
-
-                    for network in networks.entries {
-                        conn.write_all(network.ssid.as_bytes()).await?;
-                        conn.write_all(&[13,10]).await?;
-                    }
+                    // let mut control = self.control.lock().await;
+                    // let networks = control.get_scan_network_list().await.unwrap();
+                    // conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
+                    //
+                    // for network in networks.entries {
+                    //     conn.write_all(network.ssid.as_bytes()).await?;
+                    //     conn.write_all(&[13,10]).await?;
+                    // }
                 },
                 ("api","benchmark") => {
                     conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
@@ -511,16 +517,21 @@ impl Handler for HttpHandler {
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
-    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_240MHz));
+    println!("Hello, world!");
+    let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_80MHz));
+    println!("Got this far!");
 
     let mut rng = Rng::new(peripherals.RNG);
+    println!("RNG UP");
 
     init_heap();
+    println!("HEAP UP");
+
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
-    info!("Hello, world!");
-    let mut cpu_control = CpuControl::new(peripherals.CPU_CTRL);
+    println!("TIMER UP");
 
+    info!("Hello, world!");
     let mut i2c = I2c::new(
         peripherals.I2C0,
         i2c::master::Config::default(),
@@ -529,6 +540,8 @@ async fn main(spawner: Spawner) {
         .with_sda(peripherals.GPIO32)
         .with_scl(peripherals.GPIO33)
         .into_async();
+
+    println!("I2C UP");
 
     let mut display = display::DisplayManager::new(i2c,spawner);
 
@@ -878,25 +891,25 @@ async fn main(spawner: Spawner) {
         }));
         spawner.spawn(dhcp_server_task(net_stack)).unwrap();
         spawner.spawn(captive_portal_dns_task(net_stack)).unwrap();
-        let mac = control.get_mac_addr().await.unwrap();
-        let ssid = format!("PictoThing-{:02X}{:02X}{:02X}",mac[3],mac[4],mac[5]);
+        //let mac = control.get_mac_addr().await.unwrap();
+        //let ssid = format!("PictoThing-{:02X}{:02X}{:02X}",mac[3],mac[4],mac[5]);
 
-        display.send(DisplayUpdate::AddLogMessage(String::from("Please reconfigure".to_string()))).await;
-        display.send(DisplayUpdate::AddLogMessage(format!("AP: {}",ssid))).await;
-        display.send(DisplayUpdate::AddLogMessage("IP: 10.82.50.1".to_string())).await;
+        // display.send(DisplayUpdate::AddLogMessage(String::from("Please reconfigure".to_string()))).await;
+        // display.send(DisplayUpdate::AddLogMessage(format!("AP: {}",ssid))).await;
+        // display.send(DisplayUpdate::AddLogMessage("IP: 10.82.50.1".to_string())).await;
 
         info!("No Config, or unable to connect to WiFi, starting AP");
-        control.set_ap_mode().await.expect("TODO: panic message");
-
-        control.start_ap(ApStatus {
-            ssid: heapless::String::from_str(ssid.as_ref()).unwrap(),
-            psk: heapless::String::from_str("").unwrap(),
-            channel: 11,
-            security: Security::Open,
-            max_connections: 8,
-            hidden: false,
-            bandwidth: Ht20,
-        }).await.expect("TODO: panic message");
+        // control.set_ap_mode().await.expect("TODO: panic message");
+        //
+        // control.start_ap(ApStatus {
+        //     ssid: heapless::String::from_str(ssid.as_ref()).unwrap(),
+        //     psk: heapless::String::from_str("").unwrap(),
+        //     channel: 11,
+        //     security: Security::Open,
+        //     max_connections: 8,
+        //     hidden: false,
+        //     bandwidth: Ht20,
+        // }).await.expect("TODO: panic message");
     } else {
         display.send(DisplayUpdate::AddLogMessage("Wifi UP, Waiting for IP".to_string())).await;
 

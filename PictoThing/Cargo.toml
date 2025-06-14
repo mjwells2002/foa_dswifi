@@ -7,38 +7,38 @@ edition = "2021"
 [dependencies]
 foa_dswifi = { path = "../foa_dswifi/" }
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32"]}
-esp-hal = { version = "1.0.0-beta.0", features = ["esp32", "defmt", "unstable"] }
-esp-hal-embassy = { version = "0.7.0", features = ["esp32", "defmt"] }
-esp-alloc = { version = "0.7.0", features = ["defmt"] }
-esp-backtrace = { version = "0.15.1", features = ["esp32", "panic-handler", "println"] }
-esp-println = { version = "0.13.1", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
+esp-hal = { version = "1.0.0-beta.1", features = ["esp32", "unstable", "psram"] }
+esp-hal-embassy = { version = "0.8.1", features = ["esp32", "defmt"] }
+esp-alloc = { version = "0.8.0", features = ["defmt"] }
+esp-backtrace = { version = "0.16.0", features = ["esp32", "panic-handler", "println"] }
+esp-println = { version = "0.14.0", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
 embassy-executor = { version = "0.7.0", features = ["defmt", "nightly"] }
-embassy-net = {version = "0.6.0", features = ["defmt", "tcp", "udp", "raw", "dhcpv4", "medium-ethernet", "dns", "proto-ipv4", "multicast"] }
+embassy-net = {version = "0.7.0", features = ["defmt", "tcp", "udp", "raw", "dhcpv4", "medium-ethernet", "dns", "proto-ipv4", "multicast"] }
 embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 embassy-net-esp-hosted = { version = "0.2.0", features = ["defmt"]}
 static_cell = { version = "2.1.0", features = ["nightly"] }
 ieee80211 = { git = "https://github.com/Frostie314159/ieee80211-rs", default-features = false, features = ["defmt"]}
 embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"
-embassy-sync = "0.6.1"
+embassy-sync = "0.7.0"
 defmt = "1.0.1"
 embedded-storage = { version = "0.3.1", features = []}
-esp-storage = { version = "0.5.0", features = ["esp32", "low-level"] }
-embedded-sdmmc = {  version = "0.8.1" }
+esp-storage = { version = "0.6.0", features = ["esp32"] }
+embedded-sdmmc = {  version = "0.8.2" }
 mbrs = { version = "0.3.1", default-features = false, features = ["no-std"]}
 embedded-fatfs = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "embedded-fatfs", default-features = false, features = ["defmt","alloc","lfn","unicode"]}
 sdspi = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "sdspi", features = ["defmt"]}
 block-device-adapters = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "block-device-adapters", features = ["defmt"]}
 block-device-driver = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "block-device-driver"}
 aligned = "0.4.2"
-ekv = {version = "1.0.0", features = ["defmt","page-size-4096","align-4","max-page-count-80","max-value-size-2048"]}
-edge-http = { version = "0.5.1" }
-edge-nal-embassy = { version = "0.5.0" }
+ekv = { git = "https://github.com/embassy-rs/ekv.git", features = ["defmt","page-size-4096","align-4","max-page-count-80","max-value-size-2048"]}
+edge-http = { version = "0.6.0" }
+edge-nal-embassy = { version = "0.6.0" }
 edge-nal = "0.5.0"
 heapless = "0.8.0"
-edge-dhcp = { version = "0.5.0" }
-edge-captive = { version = "0.5.0" }
+edge-dhcp = { version = "0.6.0" }
+edge-captive = { version = "0.6.0" }
 ssd1306 = {  version = "0.10.0", features = ["async", "graphics"] }
 embedded-graphics = "0.8.1"
 embedded-sprites = "0.2.0"
