@@ -94,6 +94,7 @@ use embedded_graphics::primitives::{Primitive, PrimitiveStyle, Rectangle};
 use embedded_graphics::text::{Baseline, Text};
 use esp_hal::config::WatchdogConfig;
 use esp_hal::i2c::master::I2c;
+use esp_hal::psram::psram_raw_parts;
 use esp_hal_embassy::Executor;
 use ssd1306::{I2CDisplayInterface, Ssd1306};
 use ssd1306::mode::DisplayConfig;
@@ -110,7 +111,7 @@ const HEAP_2_SIZE: usize = 45 * 1000;
 
 static mut APP_CORE_STACK: esp_hal::system::Stack<8192> = esp_hal::system::Stack::new();
 
-fn init_heap() {
+fn init_heap(psram_start: *mut u8, psram_size: usize) {
     static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
     #[link_section =".dram2_uninit"]
     static mut HEAP_2: MaybeUninit<[u8; HEAP_2_SIZE]> = MaybeUninit::uninit();
@@ -126,6 +127,12 @@ fn init_heap() {
             HEAP_2.as_mut_ptr() as *mut u8,
             HEAP_2_SIZE,
             esp_alloc::MemoryCapability::Internal.into(),
+        ));
+
+        esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
+            psram_start,
+            psram_size,
+            esp_alloc::MemoryCapability::External.into(),
         ));
     }
 }
@@ -520,7 +527,13 @@ async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_240MHz));
     let mut rng = Rng::new(peripherals.RNG);
 
-    init_heap();
+    {
+        let (start, size) = psram_raw_parts(&peripherals.PSRAM);
+        info!("PSRAM size = {}", size);
+        info!("PSRAM start = {:#x}", start as usize);
+
+        init_heap(start,size);
+    }
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
@@ -633,9 +646,7 @@ async fn main(spawner: Spawner) {
     }
 
 
-   // let (start, size) = psram_raw_parts(&peripherals.PSRAM);
-    //println!("PSRAM size = {}", size);
-    //println!("PSRAM start = {:#x}", start as usize);
+
 
     let mut wifi_ssid = vec![0u8;32];
     let mut wifi_password = vec![0u8;64];
