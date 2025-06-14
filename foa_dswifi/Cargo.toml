@@ -1,0 +1,17 @@
+[package]
+name = "foa_dswifi"
+version = "0.1.0"
+edition = "2021"
+
+
+[dependencies]
+foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32"]}
+esp-hal = { version = "1.0.0-beta.0", features = ["esp32", "defmt", "unstable"] }
+embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
+ieee80211 = { git = "https://github.com/Frostie314159/ieee80211-rs", default-features = false, features = ["defmt"]}
+embedded-io-async = "0.6.1"
+embassy-futures = "0.1.1"
+embassy-sync = "0.6.1"
+hex-literal = "1.0.0"
+bitflags = "2.6.0"
+defmt = "1.0.1"
