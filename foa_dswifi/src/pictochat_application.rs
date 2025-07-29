@@ -127,6 +127,7 @@ pub struct PictochatExternalInterface<'res> {
 
 struct PictochatInflightDataTransfer {
     inflight_data: Option<Vec<u8>>,
+    inflight_data_tx: Option<Vec<u8>>,
 }
 
 pub struct PictoChatApplication<'res> {
@@ -153,6 +154,7 @@ impl<'res> PictoChatApplication<'res> {
             },
             inflight_data: Mutex::from(PictochatInflightDataTransfer {
                 inflight_data: None,
+                inflight_data_tx: None,
             }),
         };
 
@@ -200,7 +202,7 @@ impl<'res> PictoChatApplication<'res> {
                     let len = data.measure_with(&());
                     let mut p_inflight = vec![0u8; len];
                     p_inflight.pwrite(data, 0).expect("TODO: panic message");
-                    inflight.inflight_data = Option::from(p_inflight);
+                    inflight.inflight_data_tx = Option::from(p_inflight);
                     info!("about to send");
                     PictoChatState::SendMessage(-1)
                 }
@@ -289,7 +291,7 @@ impl<'res> PictoChatApplication<'res> {
                 },
                 PictoChatState::SendMessage(offset) => {
                     let mut inflight = self.inflight_data.lock().await;
-                    let tx_buf = inflight.inflight_data.take().unwrap();
+                    let tx_buf = inflight.inflight_data_tx.take().unwrap();
                     if offset < 0 {
                         tx_out.flags = HostToClientFlags::from_bits(29).unwrap();
                         let ident = PictochatType1 {
@@ -302,7 +304,7 @@ impl<'res> PictoChatApplication<'res> {
                         };
                         let written = tx_out.data.pwrite(ident, 0).unwrap();
                         tx_out.size = written as u16;
-                        inflight.inflight_data = Some(tx_buf);
+                        inflight.inflight_data_tx = Some(tx_buf);
                         self.state_queue.try_send(PictoChatState::SendMessage(0)).expect("TODO: panic message");
                     } else {
                         let data_size = if tx_buf.len() as u16 - (offset as u16) > MESSAGE_CHUNK_SIZE as u16 { MESSAGE_CHUNK_SIZE as u16 } else { tx_buf.len() as u16 - (offset as u16)  } as u16;
@@ -342,7 +344,7 @@ impl<'res> PictoChatApplication<'res> {
                             self.state_queue.try_send(PictoChatState::SendMessage(offset + data_size as i32)).expect("TODO: panic message");
                         }
                         if !is_last_fragment {
-                            inflight.inflight_data = Some(tx_buf);
+                            inflight.inflight_data_tx = Some(tx_buf);
                         }
                     }
 
@@ -378,6 +380,7 @@ impl<'res> PictoChatApplication<'res> {
                 if parsed.data_size < MAX_TRANSFER_SIZE {
                     let mut inflight = self.inflight_data.lock().await;
                     if inflight.inflight_data.is_none() {
+                        info!("transfer started, allocating buffer");
                         inflight.inflight_data = Some(vec![0u8; parsed.data_size as usize]);
                     } else {
                         warn!("transfer started when inflight data present, reallocating buffer");
@@ -406,7 +409,7 @@ impl<'res> PictoChatApplication<'res> {
                         }
                         inflight.inflight_data = Some(inflight_buf);
                     } else {
-                        warn!("no buffer in place for transfer")
+                        error!("no buffer in place for transfer, {} {} {}", header.size_with_header, parsed.write_offset, parsed.payload.len())
                     }
                 }
 

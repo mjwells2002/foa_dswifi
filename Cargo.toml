@@ -4,6 +4,9 @@ resolver = "2"
 
 [patch.crates-io]
 
+embassy-net-driver = { version = "0.2.0",  path = "/home/bread/CLionProjects/embassy/embassy-net-driver" }
+embassy-net-esp-hosted = { version = "0.2.0", path = "/home/bread/CLionProjects/embassy/embassy-net-esp-hosted" }
+embassy-time-driver = { version = "0.2.0", path = "/home/bread/CLionProjects/embassy/embassy-time-driver"}
 
 [profile.dev]
 # Rust debug is too slow.

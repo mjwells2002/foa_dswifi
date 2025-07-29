@@ -225,6 +225,10 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
     async fn handle_deauth(&self, deauth: DeauthenticationFrame<'_>) {
         let mut client_manager = self.client_manager.lock().await;
 
+        if !client_manager.has_client(deauth.header.transmitter_address) {
+            info!("ignoring deauth frame from client that doesn't exist: {:?}", deauth.header.transmitter_address);
+            return;
+        }
         let aid = client_manager.get_client(deauth.header.transmitter_address).unwrap().association_id;
         self.event_tx.send(DsWiFiClientEvent::Disconnected(*deauth.header.transmitter_address)).await;
 
@@ -464,9 +468,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
             }),
             _phantom: Default::default(),
         };
-
         let mut buffer = self.interface_control.alloc_tx_buf().await;
-        let size = buffer.measure_with(&());
+        let size = frame.measure_with(&false);
         frame.header.duration = calculate_air_duration(WiFiRate::PhyRate2MS, size);
         let written  = buffer.pwrite_with(frame, 0, false).unwrap();
 
@@ -483,7 +486,6 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                 tx_error_behaviour: Drop,
                 ack_timeout: 0,
                 key_slot: None,
-
             },
             false
         ).await;

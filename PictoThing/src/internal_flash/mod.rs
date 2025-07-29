@@ -9,8 +9,8 @@ use embassy_time::Instant;
 use esp_hal::system::software_reset;
 use crate::mk_static_dram2;
 
-const CONFIG_PART_START: usize = 0x3b0000;
-const CONFIG_PART_SIZE: usize = 0x4F000;
+const CONFIG_PART_START: usize = 0x5F0000;
+const CONFIG_PART_SIZE: usize = 0x100000;
 const CONFIG_PART_RANGE: Range<usize> = CONFIG_PART_START..CONFIG_PART_START+CONFIG_PART_SIZE;
 
 pub struct CachedFlashWrapper {
@@ -116,16 +116,15 @@ impl InternalFlash {
             inner: ekv_db
         }
     }
-    pub async fn read_key(&self, key_value: &[u8], mut out_vec: &mut Vec<u8>) -> bool {
+    pub async fn read_key(&self, key_value: &[u8], mut out_vec: &mut [u8]) -> (bool, usize) {
         let rtx = self.inner.read_transaction().await;
         match rtx.read(key_value, &mut out_vec).await {
             Ok(key_size) => {
-                out_vec.truncate(key_size);
-                true
+                (true,key_size)
             }
             Err(e) => match e {
                 ReadError::KeyNotFound => {
-                    false
+                    (false,0)
                 }
                 _ => {
                     warn!("Flash is Corrupted");
