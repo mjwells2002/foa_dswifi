@@ -33,7 +33,6 @@ impl ekv::flash::Flash for CachedFlashWrapper {
             panic!("Attempt to erase out of bounds");
         }
         unsafe {
-            esp_storage::ll::spiflash_unlock().expect("Failed to unlock flash");
             match esp_storage::ll::spiflash_erase_sector(sector as u32) {
                 Ok(_) => {
                     Ok(())
@@ -53,7 +52,6 @@ impl ekv::flash::Flash for CachedFlashWrapper {
         let sector = self.range.start.div_floor(config::PAGE_SIZE) + page_id.index();
         let address = page_id.index() * config::PAGE_SIZE + self.range.start;
         unsafe {
-            esp_storage::ll::spiflash_unlock().expect("Failed to unlock flash");
             match esp_storage::ll::spiflash_read(address as u32, self.io_buffer.0.as_mut_ptr() as *mut u32, self.io_buffer.0.len() as u32) {
                 Ok(_) => {
                     data.copy_from_slice(&self.io_buffer.0[offset..offset+data.len()]);
@@ -75,7 +73,6 @@ impl ekv::flash::Flash for CachedFlashWrapper {
         }
         let address = page_id.index() * config::PAGE_SIZE + self.range.start;
         unsafe {
-            esp_storage::ll::spiflash_unlock().expect("Failed to unlock flash");
             match esp_storage::ll::spiflash_read(address as u32, self.io_buffer.0.as_mut_ptr() as *mut u32, self.io_buffer.0.len() as u32) {
                 Ok(_) => {}
                 Err(c) => {

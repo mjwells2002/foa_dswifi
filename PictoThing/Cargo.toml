@@ -7,7 +7,7 @@ edition = "2021"
 [dependencies]
 foa_dswifi = { path = "../foa_dswifi/" }
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32", "defmt"]}
-esp-hal = { version = "1.0.0-beta.1", features = ["esp32", "unstable"] }
+esp-hal = { version = "1.0.0-rc.0", features = ["esp32", "unstable"] }
 esp-hal-embassy = { version = "0.8.1", features = ["esp32", "defmt"] }
 esp-alloc = { version = "0.8.0", features = ["defmt"] }
 esp-backtrace = { version = "0.16.0", features = ["esp32", "panic-handler", "println"] }
@@ -17,8 +17,8 @@ embassy-executor = { version = "0.7.0", features = ["defmt", "nightly"] }
 embassy-net = {version = "0.7.0", features = ["defmt", "tcp", "udp", "raw", "dhcpv4", "medium-ethernet", "dns", "proto-ipv4", "multicast"] }
 embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 embassy-net-esp-hosted = { version = "0.2.0", features = ["defmt"]}
-static_cell = { version = "2.1.0", features = ["nightly"] }
-ieee80211 = { version = "0.5.6", features = ["default", "crypto", "defmt"]}
+static_cell = { version = "2.1.1", features = ["nightly"] }
+ieee80211 = { version = "0.5.7", features = ["default", "crypto", "defmt"]}
 embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"
 embassy-sync = "0.7.0"

@@ -649,10 +649,10 @@ async fn main(spawner: Spawner) {
     let mut psk_size: usize = 0;
 
     if should_erase {
-        display.send(DisplayUpdate::AddLogMessage(String::from("Erasing Config ..."))).await;
+        //display.send(DisplayUpdate::AddLogMessage(String::from("Erasing Config ..."))).await;
         flash.format_ekv().await;
         led.set_low();
-        display.send(DisplayUpdate::AddLogMessage(String::from("Done"))).await;
+        //display.send(DisplayUpdate::AddLogMessage(String::from("Done"))).await;
     }
 
     (no_config, ssid_size) = flash.read_key(b"wifi_ssid", &mut wifi_ssid_stack).await;
@@ -671,6 +671,12 @@ async fn main(spawner: Spawner) {
     if psk_size > 0 {
         wifi_password.copy_from_slice(&wifi_password_stack[..psk_size]);
     }
+
+
+    info!("Has SSID: {}", !no_config);
+    info!("Is Open Network: {}", is_open_network);
+    info!("SSID: {:?}", wifi_ssid.as_slice());
+    info!("PSK: {:?}", wifi_password.as_slice());
 
     // let spi3_sclk = peripherals.GPIO25;
     // let spi3_miso = peripherals.GPIO22;
@@ -891,7 +897,6 @@ async fn main(spawner: Spawner) {
     let ([ds_vif, ..], foa_runner) = foa::init(
         stack_resources,
         peripherals.WIFI,
-        peripherals.RADIO_CLK,
         peripherals.ADC2,
     );
     spawner.spawn(foa_task(foa_runner)).unwrap();
@@ -921,7 +926,7 @@ async fn main(spawner: Spawner) {
 
     let mut bad_apple_offset = 0;
 
-    let mut ticker = Ticker::every(Duration::from_millis(143));
+    let mut ticker = Ticker::every(Duration::from_millis(1000));
     loop {
         match select4(pictochat_interface.inbound_queue.receive(),pictochat_interface.event_queue.receive(),channel_rx.receive(),ticker.next()).await {
             Either4::First(message) => {
@@ -970,20 +975,20 @@ async fn main(spawner: Spawner) {
                 }
             },
             Either4::Fourth(_) => {
-
+                display.send(DisplayUpdate::AddLogMessage("Tick".to_string())).await;
                 // let bad_apple_slice = &BAD_APPLE[bad_apple_offset..bad_apple_offset+20480];
                 // bad_apple_offset += 20480;
                 // if bad_apple_offset >= BAD_APPLE.len() {
                 //     bad_apple_offset = 0;
                 // }
                 //channel_tx.send(bad_apple_slice.to_vec()).await;
-                let mut out = MessagePayload {
-                    ..Default::default()
-                };
-                out.from = MACAddress::from(mac);
-                out.message = vec![0;20480];
-
-                pictochat_interface.outbound_queue.send(out).await;
+                // let mut out = MessagePayload {
+                //     ..Default::default()
+                // };
+                // out.from = MACAddress::from(mac);
+                // out.message = vec![0;10240];
+                //
+                // pictochat_interface.outbound_queue.send(out).await;
 
 
                 // let networks = control.get_scan_network_list().await.unwrap();
