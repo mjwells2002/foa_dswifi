@@ -65,7 +65,7 @@ use embassy_net::{
     DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
 };
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_fatfs::FsOptions;
+use embedded_fatfs::{FsOptions};
 use embedded_io_async::{ErrorType, Read, Seek, SeekFrom, Write};
 use embedded_sdmmc::{Block, BlockDevice, BlockIdx, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
 use embedded_sdmmc::sdcard::Error;
@@ -106,13 +106,105 @@ use embassy_net_esp_hosted::ApStatus;
 use embassy_net_esp_hosted::Bandwidth::{Ht20, Ht40};
 use esp_bootloader_esp_idf::ota::Slot;
 use esp_bootloader_esp_idf::partitions::{DataPartitionSubType, PartitionEntry};
-
 esp_bootloader_esp_idf::esp_app_desc!();
 
-const WEB_PAGE: &[u8] = include_bytes!("index.html.gz");
+include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
+
+fn guess_mime_type(filename: &str) -> &'static str {
+    match filename.rsplit('.').next() {
+        Some(ext) => match ext.to_lowercase().as_str() {
+            "html" | "htm" => "text/html",
+            "css" => "text/css",
+            "js" => "application/javascript",
+            "json" => "application/json",
+            "png" => "image/png",
+            "jpg" | "jpeg" => "image/jpeg",
+            "gif" => "image/gif",
+            "svg" => "image/svg+xml",
+            "txt" => "text/plain",
+            "wasm" => "application/wasm",
+            "pdf" => "application/pdf",
+            "bin" => "application/octet-stream",
+            "mp4" => "video/mp4",
+            "m4v" => "video/mp4",
+            "webm" => "video/webm",
+            "ogv" => "video/ogg",
+            "avi" => "video/x-msvideo",
+            "mov" => "video/quicktime",
+            "wmv" => "video/x-ms-wmv",
+            "flv" => "video/x-flv",
+            "mkv" => "video/x-matroska",
+            "mp3" => "audio/mpeg",
+            "wav" => "audio/wav",
+            "ogg" => "audio/ogg",
+            "oga" => "audio/ogg",
+            "m4a" => "audio/mp4",
+            "flac" => "audio/flac",
+            "aac" => "audio/aac",
+            "opus" => "audio/opus",
+            "weba" => "audio/webm",
+            _ => "application/octet-stream",
+        },
+        None => "application/octet-stream",
+    }
+}
+fn get_file(name: &str) -> Option<&'static [u8]> {
+    for (n, data) in FILES {
+        if *n == name {
+            return Some(*data);
+        }
+    }
+    None
+}
+
+pub fn url_decode(input: String) -> String {
+    let mut output = String::with_capacity(input.len()); // worst case: same size
+
+    let bytes = input.as_bytes();
+    let mut i = 0;
+
+    while i < bytes.len() {
+        match bytes[i] {
+            b'%' if i + 2 < bytes.len() => {
+                let hi = hex_val(bytes[i + 1]);
+                let lo = hex_val(bytes[i + 2]);
+                if hi < 16 && lo < 16 {
+                    output.push((hi << 4 | lo) as char);
+                    i += 3;
+                } else {
+                    // Invalid percent encoding — keep as is
+                    output.push('%');
+                    i += 1;
+                }
+            }
+            b'+' => {
+                output.push(' ');
+                i += 1;
+            }
+            c => {
+                output.push(c as char);
+                i += 1;
+            }
+        }
+    }
+
+    output
+}
+
+fn hex_val(c: u8) -> u8 {
+    match c {
+        b'0'..=b'9' => c - b'0',
+        b'a'..=b'f' => c - b'a' + 10,
+        b'A'..=b'F' => c - b'A' + 10,
+        _ => 255,
+    }
+}
+
+
+//const WEB_PAGE: &[u8] = include_bytes!("index.html.gz");
 //const BAD_APPLE: &[u8] = include_bytes!("bad_apple_small.raw");
 //const HEAP_SIZE: usize = 30 * 1000;
-const HEAP_2_SIZE: usize = 60 * 1000;
+//const HEAP_2_SIZE: usize = 60 * 1000;
 
 //static mut APP_CORE_STACK: esp_hal::system::Stack<8192> = esp_hal::system::Stack::new();
 
@@ -517,27 +609,65 @@ impl Handler for HttpHandler {
                     conn.initiate_response(418, Some("I'm a teapot"), &[("Connection","Close")]).await?;
                 }
                 (_, _) => {
-                    conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
+                    //conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
                 }
             }
         }
-        if conn.headers()?.path == "/" {
-            if let Some(accept_encoding) = conn.headers()?.headers.get("Accept-Encoding") {
-                if accept_encoding.contains("gzip") {
-                    conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/html"),("Content-Encoding","gzip"),("Connection","Close")]).await?;
-                    conn.write_all(WEB_PAGE).await?;
+
+        let path = conn.headers()?.path.clone();
+        let mut path_strip = if path.starts_with("/") {
+            path.strip_prefix("/").unwrap().to_string()
+        } else { path.parse().unwrap() };
+
+        if path == "/" {
+            path_strip.push_str("index.html");
+        }
+
+        path_strip = url_decode(path_strip);
+
+        let path_strip = path_strip.as_str();
+
+        let mut is_gzip = false;
+
+        if let Some(accept_encoding) = conn.headers()?.headers.get("Accept-Encoding") {
+            if accept_encoding.contains("gzip") {
+                is_gzip = true;
+            }
+        }
+
+        if is_gzip {
+            match get_file(format!("{}.gz", path_strip).as_str()) {
+                Some(file) => {
+                    info!("Serving file from flash, {} using gzip encoded version", path_strip);
+                    conn.initiate_response(200, Some("OK"), &[("Content-Type", guess_mime_type(path_strip)),("Content-Encoding", "gzip"),("Connection","Close")]).await?;
+                    conn.write_all(file).await?;
                     conn.flush().await?;
-                } else {
-                    conn.initiate_response(406, Some("Not Acceptable"),&[("Content-Type", "text/html"),("Content-Encoding","gzip"),("Connection","Close")]).await?;
-                    conn.flush().await?;
+                    conn.complete().await?;
+                    return Ok(());
                 }
-            } else {
-                conn.initiate_response(406, Some("Not Acceptable"),&[("Content-Type", "text/html"),("Content-Encoding","gzip"),("Connection","Close")]).await?;
+                None => {}
+            }
+        }
+
+        match get_file(path_strip) {
+            Some(file) => {
+                info!("Serving file from flash, {}", path_strip);
+                conn.initiate_response(200, Some("OK"), &[("Content-Type", guess_mime_type(path_strip)),("Connection","Close")]).await?;
+                conn.write_all(file).await?;
                 conn.flush().await?;
             }
-        } else {
-            conn.initiate_response(302, Some("Found"), &[("Connection","Close"),("Location","http://10.82.50.1/")]).await?;
+            None => {
+                if !is_gzip && get_file(format!("{}.gz", path_strip).as_str()).is_some() {
+                    info!("File was requested but not served as only gzip version is present, {}", path_strip);
+                    conn.initiate_response(406, Some("Not Acceptable"), &[("Connection","Close")]).await?;
+                    conn.complete().await?;
+                    return Ok(())
+                }
+
+                conn.initiate_response(302, Some("Found"), &[("Connection","Close"),("Location","http://10.82.50.1/")]).await?;
+            }
         }
+
         conn.complete().await?;
         Ok(())
     }
