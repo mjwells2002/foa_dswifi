@@ -486,6 +486,8 @@ impl Handler for HttpHandler {
                     //     conn.write_all(network.ssid.as_bytes()).await?;
                     //     conn.write_all(&[13,10]).await?;
                     // }
+                    conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
+                    conn.write_all(b"Scanning Disabled").await?;
                 },
                 ("api","benchmark") => {
                     conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
@@ -975,7 +977,8 @@ async fn main(spawner: Spawner) {
                 }
             },
             Either4::Fourth(_) => {
-                display.send(DisplayUpdate::AddLogMessage("Tick".to_string())).await;
+                //display.send(DisplayUpdate::AddLogMessage("Tick".to_string())).await;
+
                 // let bad_apple_slice = &BAD_APPLE[bad_apple_offset..bad_apple_offset+20480];
                 // bad_apple_offset += 20480;
                 // if bad_apple_offset >= BAD_APPLE.len() {

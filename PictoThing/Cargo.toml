@@ -8,10 +8,10 @@ edition = "2021"
 foa_dswifi = { path = "../foa_dswifi/" }
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32", "defmt"]}
 esp-hal = { version = "1.0.0-rc.0", features = ["esp32", "unstable"] }
-esp-hal-embassy = { version = "0.8.1", features = ["esp32", "defmt"] }
+esp-hal-embassy = { version = "0.9.0", features = ["esp32", "defmt"] }
 esp-alloc = { version = "0.8.0", features = ["defmt"] }
-esp-backtrace = { version = "0.16.0", features = ["esp32", "panic-handler", "println"] }
-esp-println = { version = "0.14.0", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
+esp-backtrace = { version = "0.17.0", features = ["esp32", "panic-handler", "println"] }
+esp-println = { version = "0.15.0", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
 embassy-executor = { version = "0.7.0", features = ["defmt", "nightly"] }
 embassy-net = {version = "0.7.0", features = ["defmt", "tcp", "udp", "raw", "dhcpv4", "medium-ethernet", "dns", "proto-ipv4", "multicast"] }
@@ -24,8 +24,8 @@ embassy-futures = "0.1.1"
 embassy-sync = "0.7.0"
 defmt = "1.0.1"
 embedded-storage = { version = "0.3.1", features = []}
-esp-storage = { version = "0.6.0", features = ["esp32"] }
-embedded-sdmmc = {  version = "0.8.2" }
+esp-storage = { version = "0.7.0", features = ["esp32"] }
+embedded-sdmmc = {  version = "0.9.0" }
 mbrs = { version = "0.3.1", default-features = false, features = ["no-std"]}
 embedded-fatfs = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "embedded-fatfs", default-features = false, features = ["defmt","alloc","lfn","unicode"]}
 #sdspi = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "sdspi", features = ["defmt"]}
