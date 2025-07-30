@@ -8,6 +8,7 @@ edition = "2021"
 foa_dswifi = { path = "../foa_dswifi/" }
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32", "defmt"]}
 esp-hal = { version = "1.0.0-rc.0", features = ["esp32", "unstable"] }
+esp-bootloader-esp-idf = {  version = "0.2.0", features = ["esp32","defmt"] }
 esp-hal-embassy = { version = "0.9.0", features = ["esp32", "defmt"] }
 esp-alloc = { version = "0.8.0", features = ["defmt"] }
 esp-backtrace = { version = "0.17.0", features = ["esp32", "panic-handler", "println"] }
@@ -42,3 +43,4 @@ edge-captive = { version = "0.6.0" }
 ssd1306 = {  version = "0.10.0", features = ["async", "graphics"] }
 embedded-graphics = "0.8.1"
 embedded-sprites = "0.2.0"
+cfg-if = "1.0.1"

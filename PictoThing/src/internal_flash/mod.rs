@@ -8,11 +8,6 @@ use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
 use embassy_time::Instant;
 use esp_hal::system::software_reset;
 use crate::mk_static_dram2;
-
-const CONFIG_PART_START: usize = 0x5F0000;
-const CONFIG_PART_SIZE: usize = 0x100000;
-const CONFIG_PART_RANGE: Range<usize> = CONFIG_PART_START..CONFIG_PART_START+CONFIG_PART_SIZE;
-
 pub struct CachedFlashWrapper {
     range: Range<usize>,
     io_buffer: AlignedBuf<{ config::PAGE_SIZE }>,
@@ -59,7 +54,7 @@ impl ekv::flash::Flash for CachedFlashWrapper {
                     Ok(())
                 }
                 Err(c) => {
-                    warn!("Read Error {}",c);
+                    //warn!("Read Error {}",c);
                     Err(c)
                 }
             }
@@ -100,9 +95,9 @@ pub struct InternalFlash {
 }
 
 impl InternalFlash {
-    pub fn new(random_seed: u32) -> Self {
+    pub fn new(random_seed: u32, config_part: Range<usize>) -> Self {
         let flash = CachedFlashWrapper {
-            range: CONFIG_PART_RANGE,
+            range: config_part,
             io_buffer: AlignedBuf([0; config::PAGE_SIZE])
         };
         let mut ekv_config = ekv::Config::default();

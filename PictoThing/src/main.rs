@@ -70,7 +70,7 @@ use embedded_io_async::{ErrorType, Read, Seek, SeekFrom, Write};
 use embedded_sdmmc::{Block, BlockDevice, BlockIdx, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
 use embedded_sdmmc::sdcard::Error;
 use esp_alloc::HeapStats;
-use esp_hal::uart::Uart;
+use esp_hal::uart::{Parity, Uart};
 use {esp_backtrace as _, defmt as _};
 use foa_dswifi::pictochat_packets::MessagePayload;
 use embedded_storage::{ReadStorage, Storage};
@@ -104,6 +104,10 @@ use crate::display::DisplayUpdate;
 use crate::internal_flash::{CachedFlashWrapper, InternalFlash};
 use embassy_net_esp_hosted::ApStatus;
 use embassy_net_esp_hosted::Bandwidth::{Ht20, Ht40};
+use esp_bootloader_esp_idf::ota::Slot;
+use esp_bootloader_esp_idf::partitions::{DataPartitionSubType, PartitionEntry};
+
+esp_bootloader_esp_idf::esp_app_desc!();
 
 const WEB_PAGE: &[u8] = include_bytes!("index.html.gz");
 //const BAD_APPLE: &[u8] = include_bytes!("bad_apple_small.raw");
@@ -204,9 +208,9 @@ async fn udp_send_task(stack: Stack<'static>) {
 
 #[embassy_executor::task]
 async fn tcp_listen_task(stack: Stack<'static>) {
-    let mut buf = vec![0u8; 5_000];
-    let mut sock_rx_buffer = vec![0u8; 30_000];
-    let mut sock_tx_buffer= vec![0u8; 10_000];
+    let mut buf = vec![0u8; 10_000];
+    let mut sock_rx_buffer = vec![0u8; 100_000];
+    let mut sock_tx_buffer= vec![0u8; 100_000];
     loop {
         let mut socket = embassy_net::tcp::TcpSocket::new(stack, &mut sock_rx_buffer, &mut sock_tx_buffer);
         socket.set_timeout(Some(Duration::from_secs(10)));
@@ -217,8 +221,14 @@ async fn tcp_listen_task(stack: Stack<'static>) {
         }
         info!("Received connection from {:?}", socket.remote_endpoint());
         loop {
-            socket.write_all(&buf).await.expect("TODO: panic message");
-            socket.flush().await.unwrap()
+            let mut r = socket.write_all(&buf).await;
+            if r.is_err() {
+                break;
+            }
+            r = socket.flush().await;
+            if r.is_err() {
+                break;
+            }
             // let n = match socket.read(&mut buf).await {
             //     Ok(0) => {
             //         warn!("read EOF");
@@ -477,6 +487,13 @@ impl Handler for HttpHandler {
                     }
 
                 },
+                ("api","heapdump") => {
+                    conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/plain"),("Connection","Close")]).await?;
+                    unsafe {
+                        let psram_slice = core::slice::from_raw_parts(PSRAM_START, PSRAM_SIZE);
+                        conn.write_all(psram_slice).await?;
+                    }
+                }
                 ("api", "scan") => {
                     // let mut control = self.control.lock().await;
                     // let networks = control.get_scan_network_list().await.unwrap();
@@ -526,12 +543,12 @@ impl Handler for HttpHandler {
     }
 }
 
+static mut PSRAM_START: *mut u8 = 0x0 as *mut u8;
+static mut PSRAM_SIZE: usize = 0;
 
 #[esp_hal_embassy::main]
 async fn main(spawner: Spawner) {
     let peripherals = esp_hal::init(esp_hal::Config::default().with_cpu_clock(_240MHz));
-    let mut rng = Rng::new(peripherals.RNG);
-    let flash = mk_static_dram2!(InternalFlash,InternalFlash::new(rng.random()));
 
     let mut should_erase = false;
 
@@ -539,12 +556,76 @@ async fn main(spawner: Spawner) {
         let (start, size) = psram_raw_parts(&peripherals.PSRAM);
         info!("PSRAM size = {}", size);
         info!("PSRAM start = {:#x}", start as usize);
-
+        unsafe {
+            PSRAM_START = start;
+            PSRAM_SIZE = size;
+        }
         init_heap(start, size);
+    }
+
+    let mut storage = esp_storage::FlashStorage::new();
+
+    let mut buffer = [0u8; esp_bootloader_esp_idf::partitions::PARTITION_TABLE_MAX_LEN];
+    let pt = esp_bootloader_esp_idf::partitions::read_partition_table(&mut storage, &mut buffer)
+        .unwrap();
+
+    let ota_part = pt
+        .find_partition(esp_bootloader_esp_idf::partitions::PartitionType::Data(
+            DataPartitionSubType::Ota,
+        ))
+        .unwrap()
+        .unwrap();
+
+    let mut ota_part = ota_part.as_embedded_storage(&mut storage);
+
+    //TODO: build the bootloader with auto-rollback
+    let mut ota = esp_bootloader_esp_idf::ota::Ota::new(&mut ota_part).unwrap();
+    let current = ota.current_slot().unwrap();
+
+    info!(
+        "current image state {:?}",
+        ota.current_ota_state()
+    );
+
+    info!("current {:?} - next {:?}", current, current.next());
+
+    if ota.current_slot().unwrap() != Slot::None
+        && (ota.current_ota_state().unwrap() == esp_bootloader_esp_idf::ota::OtaImageState::New
+        || ota.current_ota_state().unwrap()
+        == esp_bootloader_esp_idf::ota::OtaImageState::PendingVerify)
+    {
+        info!("Changed state to VALID");
+        ota.set_current_ota_state(esp_bootloader_esp_idf::ota::OtaImageState::Valid)
+            .unwrap();
+    }
+
+    let mut config_start: usize = 0;
+    let mut config_end: usize = 0;
+
+    for i in 0..pt.len() {
+        match pt.get_partition(i) {
+            Ok(part) => {
+                info!("Partition {} {:?}",i, part);
+                if part.partition_type() == esp_bootloader_esp_idf::partitions::PartitionType::Data(DataPartitionSubType::Undefined) {
+                    if part.label_as_str() == "config" {
+                        config_start = part.offset() as usize;
+                        config_end = config_start + part.len() as usize;
+                    }
+                }
+            }
+            Err(_) => {}
+        }
+    }
+
+    if config_start + config_end <= 0 {
+        panic!("Config partition not found");
     }
 
     let timg0 = TimerGroup::new(peripherals.TIMG0);
     esp_hal_embassy::init(timg0.timer0);
+
+    let mut rng = Rng::new(peripherals.RNG);
+    let flash = mk_static_dram2!(InternalFlash,InternalFlash::new(rng.random(),config_start..config_end));
 
     if !should_erase {
         if !flash.mount().await {
