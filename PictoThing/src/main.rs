@@ -447,8 +447,8 @@ async fn server_connection_task(stack: Stack<'static>, tx_channel: DynamicSender
 
 #[embassy_executor::task]
 async fn http_listen_task(stack: Stack<'static>, flash: &'static InternalFlash, control: Mutex<NoopRawMutex, Control<'static>>) {
-    let mut server = Box::new(DefaultServer::new());
-    let box_buffers = Box::new(TcpBuffers::<4,8000,3000>::new());
+    let mut server = Box::new(edge_http::io::server::Server::<8,10_000,64>::new());
+    let box_buffers = Box::new(TcpBuffers::<8,10_000,3000>::new());
     let tcp = edge_nal_embassy::Tcp::new(stack,&box_buffers);
     let tcp_accept = tcp.bind("0.0.0.0:80".parse().unwrap()).await.unwrap();
 
@@ -639,7 +639,7 @@ impl Handler for HttpHandler {
             match get_file(format!("{}.gz", path_strip).as_str()) {
                 Some(file) => {
                     info!("Serving file from flash, {} using gzip encoded version", path_strip);
-                    conn.initiate_response(200, Some("OK"), &[("Content-Type", guess_mime_type(path_strip)),("Content-Encoding", "gzip"),("Connection","Close")]).await?;
+                    conn.initiate_response(200, Some("OK"), &[("Content-Type", guess_mime_type(path_strip)),("Content-Encoding", "gzip"),("Content-Length", format!("{}",file.len()).as_str()),("Connection","Close")]).await?;
                     conn.write_all(file).await?;
                     conn.flush().await?;
                     conn.complete().await?;
@@ -652,7 +652,7 @@ impl Handler for HttpHandler {
         match get_file(path_strip) {
             Some(file) => {
                 info!("Serving file from flash, {}", path_strip);
-                conn.initiate_response(200, Some("OK"), &[("Content-Type", guess_mime_type(path_strip)),("Connection","Close")]).await?;
+                conn.initiate_response(200, Some("OK"), &[("Content-Type", guess_mime_type(path_strip)),("Content-Length", format!("{}",file.len()).as_str()),("Connection","Close")]).await?;
                 conn.write_all(file).await?;
                 conn.flush().await?;
             }
@@ -1013,7 +1013,7 @@ async fn main(spawner: Spawner) {
     let spi = Spi::new(
         peripherals.SPI3,
         Config::default()
-            .with_frequency(Rate::from_mhz(16))
+            .with_frequency(Rate::from_mhz(20))
             .with_mode(Mode::_1),
         ).unwrap()
         .with_sck(sck)
@@ -1039,7 +1039,10 @@ async fn main(spawner: Spawner) {
 
     spawner.spawn(esph_wifi_task(runner)).unwrap();
 
-    let net_stack_resources = mk_static_dram2!(NetStackResources<10>, NetStackResources::new());
+    let mut seed_bytes = [0u8;8];
+    rng.read(&mut seed_bytes);
+    let seed: u64 = u64::from_le_bytes(seed_bytes);
+    let net_stack_resources = mk_static_dram2!(NetStackResources<20>, NetStackResources::new());
     let (net_stack, net_runner) = embassy_net::new(
         device,
         embassy_net::Config::dhcpv4(DhcpConfig::default()),
