@@ -8,6 +8,7 @@ use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer, WithTimeout};
+use esp_hal::dma::TransferDirection::In;
 use foa::esp_wifi_hal::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::esp_wifi_hal::TxErrorBehaviour::Drop;
 use foa::{LMacInterfaceControl, RxQueueReceiver};
@@ -22,14 +23,14 @@ use ieee80211::mgmt_frame::{AssociationRequestFrame, AssociationResponseFrame, A
 use ieee80211::mgmt_frame::body::{AssociationResponseBody, AuthenticationBody, BeaconBody};
 use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx};
 use ieee80211::scroll::Pwrite;
-use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWifiAidClientMaskBits, DsWifiClientMask, DsWifiClientMaskMath, Responder, MAX_CLIENTS};
+use crate::{DsWiFiClient, DsWiFiClientEvent, DsWiFiClientManager, DsWiFiClientState, DsWiFiControlEvent, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWifiAidClientMaskBits, DsWifiClientMask, DsWifiClientMaskMath, Responder, FRAME_MAX_SIZE, MAX_CLIENTS};
 use crate::DsWiFiControlEvent::FrameRequired;
 use crate::DsWiFiInterfaceControlEventResponse::{Failed, Success};
 use crate::packets::{BeaconType, ClientToHostDataFrame, DSWiFiBeaconTag, HostToClientDataFrame, HostToClientFlags, HostToClientFooter};
 use crate::pictochat_packets::{PictochatBeacon, PictochatChatroom};
 
 pub struct PendingDataFrame {
-    pub data: [u8; 300],
+    pub data: [u8; FRAME_MAX_SIZE],
     pub size: u16,
     pub flags: HostToClientFlags,
 }
@@ -50,7 +51,7 @@ pub struct DsWiFiRunner<'vif,'foa> {
     pub(crate) interface_rx_queue: &'vif mut RxQueueReceiver<'foa>,
     pub(crate) bg_rx_queue_sender: DynamicSender<'vif, BorrowedBuffer<'foa>>,
     pub(crate) ack_rx_queue_sender: DynamicSender<'vif, (MACAddress, Instant)>,
-    pub(crate) data_rx_queue_sender: DynamicSender<'vif,([u8;300],DsWifiClientMask, MACAddress, u16)>,
+    pub(crate) data_rx_queue_sender: DynamicSender<'vif,([u8; FRAME_MAX_SIZE],DsWifiClientMask, MACAddress, u16)>,
 }
 
 /* ChatGPT wrote these 2 functions, it may be wrong */
@@ -109,7 +110,13 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         let client_already_exists = client_manager.has_client(auth.header.transmitter_address);
         if client_already_exists {
-            todo!("client already exists, need to drop old clients");
+            info!("got auth frame from already existing client");
+            return;
+        }
+
+        if auth.header.receiver_address != MACAddress::from(self.mac_address) {
+            info!("got auth frame from wrong client");
+            return;
         }
 
         let next_aid = client_manager.get_next_client_aid();
@@ -499,7 +506,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
 
         //TODO: this still isnt right, but it works most of the time
-        let mut timeout = Timer::after_micros(((max_client_ack_wait_micros * 5) * (mask.num_clients() as u16)) as u64);
+        let mut timeout = Timer::after_millis(5);//Timer::after_micros(((max_client_ack_wait_micros * 5) * (mask.num_clients() as u16)) as u64);
 
         while !mask.is_empty() {
             match select(&mut timeout,self.ack_rx_queue.receive()).await {
@@ -533,6 +540,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
             client_manager.current_mask = mask;
         }
+
+        Timer::after_micros(800).await;
 
     }
     async fn handle_control(&self) {
@@ -624,7 +633,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         let mut beacon_ticker = Ticker::every(Duration::from_millis(100));
         let mut timeout_check_rate = Ticker::every(Duration::from_secs(2));
-        let mut data_rate_limit = Ticker::every(Duration::from_millis(6)); //very slow rate limit for now
+        let mut data_rate_limit = Ticker::every(Duration::from_millis(2)); //very slow rate limit for now
 
         join!(
             async {
@@ -635,17 +644,34 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
             },
             async {
                 loop {
-                    match select3(
+                    self.send_data_tick(&mut data_rate_limit).await;
+                }
+            },
+            async {
+                loop {
+                    self.send_beacon(&mut beacon_ticker).await;
+                }
+            },
+            async {
+                loop {
+                    self.handle_timeouts(&mut timeout_check_rate).await;
+                }
+            },
+            async {
+                loop {
+                    self.handle_control().await;
+                }
+            },
+            async {
+                loop {
+                    match select(
                         self.interface_control.wait_for_off_channel_request(),
                         self.bg_rx_queue.receive(),
-                        self.tick(&mut beacon_ticker,
-                                  &mut data_rate_limit,
-                                  &mut timeout_check_rate),
                     ).await {
-                        Either3::First(off_channel_request) => {
+                        Either::First(off_channel_request) => {
                             off_channel_request.reject();
                         },
-                        Either3::Second(buffer) => {self.handle_bg_rx(buffer).await;},
+                        Either::Second(buffer) => {self.handle_bg_rx(buffer).await;},
                         _ => {}
                     }
                 }

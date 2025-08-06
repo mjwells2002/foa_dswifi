@@ -1141,8 +1141,9 @@ async fn main(spawner: Spawner) {
     let channel_tx = channel_2.dyn_sender();
 
     let mut bad_apple_offset = 0;
+    let mut last_frame= Instant::now();
 
-    let mut ticker = Ticker::every(Duration::from_millis(1000));
+    let mut ticker = Ticker::every(Duration::from_millis(166));
     loop {
         match select4(pictochat_interface.inbound_queue.receive(),pictochat_interface.event_queue.receive(),channel_rx.receive(),ticker.next()).await {
             Either4::First(message) => {
@@ -1192,22 +1193,24 @@ async fn main(spawner: Spawner) {
             },
             Either4::Fourth(_) => {
                 //display.send(DisplayUpdate::AddLogMessage("Tick".to_string())).await;
+                let bad_apple_file = get_file("bad_apple.sbin").unwrap();
+                let bad_apple_slice = &bad_apple_file[bad_apple_offset..bad_apple_offset+10240];
+                bad_apple_offset += 10240;
+                if bad_apple_offset >= bad_apple_file.len() {
+                    bad_apple_offset = 0;
+                }
+                let mut out = MessagePayload {
+                    ..Default::default()
+                };
+                out.from = MACAddress::from(mac);
+                out.message = bad_apple_slice.to_vec();
 
-                // let bad_apple_slice = &BAD_APPLE[bad_apple_offset..bad_apple_offset+20480];
-                // bad_apple_offset += 20480;
-                // if bad_apple_offset >= BAD_APPLE.len() {
-                //     bad_apple_offset = 0;
-                // }
-                //channel_tx.send(bad_apple_slice.to_vec()).await;
-                // let mut out = MessagePayload {
-                //     ..Default::default()
-                // };
-                // out.from = MACAddress::from(mac);
-                // out.message = vec![0;10240];
-                //
-                // pictochat_interface.outbound_queue.send(out).await;
-
-
+                pictochat_interface.outbound_queue.send(out).await;
+                let current_frame = Instant::now();
+                info!("Time to send: {:?}",(current_frame - last_frame).as_millis());
+                let fps = 1000f32 / ((current_frame - last_frame).as_millis()*2) as f32;
+                info!("FPS: {}",fps);
+                last_frame = current_frame;
                 // let networks = control.get_scan_network_list().await.unwrap();
                 //
                 // info!("found networks {}:", networks.count);

@@ -5,6 +5,7 @@
 #![feature(future_join)]
 extern crate alloc;
 
+pub const FRAME_MAX_SIZE: usize = 300;
 pub mod runner;
 mod packets;
 pub mod pictochat_packets;
@@ -260,7 +261,7 @@ pub struct DsWiFiSharedResources<'res> {
     ack_rx_queue: Channel<NoopRawMutex, (MACAddress, Instant), 4>,
 
     data_tx_mutex: Mutex<NoopRawMutex,PendingDataFrame>,
-    data_queue: Channel<NoopRawMutex, ([u8;300],DsWifiClientMask, MACAddress, u16), 4>,
+    data_queue: Channel<NoopRawMutex, ([u8; FRAME_MAX_SIZE],DsWifiClientMask, MACAddress, u16), 4>,
     data_tx_signal: Signal<NoopRawMutex, DsWiFiControlEvent>,
     data_tx_signal_2: Signal<NoopRawMutex, DsWiFiControlEvent>,
     control_channel: RequestResponseSignal<DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse>,
@@ -279,7 +280,7 @@ impl Default for DsWiFiSharedResources<'_> {
             bg_rx_queue: Channel::new(),
             ack_rx_queue: Channel::new(),
             data_tx_mutex: Mutex::from(PendingDataFrame {
-                data: [0;300],
+                data: [0; FRAME_MAX_SIZE],
                 flags: Default::default(),
                 size: 0,
             }),
@@ -298,7 +299,7 @@ pub enum DsWiFiControlEvent {
     FrameGenerated,
 }
 pub struct DsWiFiControl<'res> {
-    pub data_rx: DynamicReceiver<'res,([u8;300], DsWifiClientMask, MACAddress, u16)>,
+    pub data_rx: DynamicReceiver<'res,([u8; FRAME_MAX_SIZE], DsWifiClientMask, MACAddress, u16)>,
     pub data_tx_mutex: &'res Mutex<NoopRawMutex, PendingDataFrame>,
     pub data_tx_signal: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,
     pub data_tx_signal_2: &'res Signal<NoopRawMutex, DsWiFiControlEvent>,

@@ -5,7 +5,7 @@ use ieee80211::scroll;
 use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx, TryIntoCtx};
 use ieee80211::scroll::{Endian, Pread, Pwrite};
 use ieee80211::scroll::Endian::Little;
-use crate::DsWifiClientMask;
+use crate::{DsWifiClientMask, FRAME_MAX_SIZE};
 
 pub struct DSWiFiBeaconTag<Payload: TryIntoCtx<()> + MeasureWith<()>> {
     pub oui_type: u8,
@@ -96,7 +96,7 @@ pub enum BeaconType {
 pub struct ClientToHostDataFrame {
     pub payload_size: u16,
     pub flags: ClientToHostFlags,
-    pub payload: Option<([u8;300],u16)>,
+    pub payload: Option<([u8; FRAME_MAX_SIZE],u16)>,
     pub footer_seq_no: Option<u16>,
 }
 
@@ -129,13 +129,13 @@ impl TryFromCtx<'_, ()> for ClientToHostDataFrame<> {
             payload_size = payload_size * 2; //length is halfwords by default unless this bit is set
         }
         let payload = {
-            let mut payload = [0u8;300];
+            let mut payload = [0u8; FRAME_MAX_SIZE];
             let mut local_payload_size = payload_size as usize;
-            if local_payload_size > 300 {
-                error!("ignoring payload size of {} bytes, max is 300", payload_size);
+            if local_payload_size > FRAME_MAX_SIZE {
+                error!("ignoring payload size of {} bytes, max is {}", payload_size, FRAME_MAX_SIZE);
                 local_payload_size = 0;
             }
-            if local_payload_size > 0 && local_payload_size < 300 {
+            if local_payload_size > 0 && local_payload_size < FRAME_MAX_SIZE {
                 payload[..local_payload_size].copy_from_slice(&from[offset..offset+local_payload_size]);
             }
             offset += local_payload_size;

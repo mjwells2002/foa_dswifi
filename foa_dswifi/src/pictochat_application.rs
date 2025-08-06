@@ -21,7 +21,7 @@ use crate::pictochat_packets::{ConsoleIdPayload, MessagePayload, PictochatHeader
 use crate::runner::PendingDataFrame;
 
 const MAX_TRANSFER_SIZE: u16 = 20480;
-const MESSAGE_CHUNK_SIZE: u8 = 180;
+const MESSAGE_CHUNK_SIZE: u16 = 180; // 180 for DS Lite, 250 for 2DS with TWiLight Menu, 250+ renders on 2DS but its very broken
 
 #[derive(PartialEq,Debug,Format,Clone)]
 pub enum PictochatHandshakePhase {
@@ -307,7 +307,7 @@ impl<'res> PictoChatApplication<'res> {
                         inflight.inflight_data_tx = Some(tx_buf);
                         self.state_queue.try_send(PictoChatState::SendMessage(0)).expect("TODO: panic message");
                     } else {
-                        let data_size = if tx_buf.len() as u16 - (offset as u16) > MESSAGE_CHUNK_SIZE as u16 { MESSAGE_CHUNK_SIZE as u16 } else { tx_buf.len() as u16 - (offset as u16)  } as u16;
+                        let data_size = if tx_buf.len() as u16 - (offset as u16) > MESSAGE_CHUNK_SIZE { MESSAGE_CHUNK_SIZE  } else { tx_buf.len() as u16 - (offset as u16)  } as u16;
                         let tx_buf_subslice = &tx_buf[offset as usize..][..data_size as usize];
                         let is_last_fragment = offset as usize + data_size as usize >= tx_buf.len();
                         let data_fragment = PictochatType2 {
