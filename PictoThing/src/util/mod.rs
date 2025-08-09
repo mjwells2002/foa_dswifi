@@ -23,6 +23,7 @@
 
 include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
 
+//helper for files included in the binary
 pub fn get_file(name: &str) -> Option<&'static [u8]> {
     for (n, data) in FILES {
         if *n == name {
