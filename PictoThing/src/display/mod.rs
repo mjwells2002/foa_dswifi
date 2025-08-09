@@ -3,21 +3,19 @@ use ssd1306::rotation::DisplayRotation;
 use ssd1306::size::DisplaySize128x64;
 use alloc::string::String;
 use alloc::vec::Vec;
-use core::fmt::Display;
-use embassy_executor::{SpawnToken, Spawner};
+use embassy_executor::Spawner;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel;
 use embassy_sync::channel::{Channel, DynamicReceiver};
 use embassy_sync::mutex::{Mutex, MutexGuard};
 use embedded_graphics::{
-    mono_font::{ascii::FONT_6X10, MonoTextStyle},
+    mono_font::MonoTextStyle,
     pixelcolor::BinaryColor,
-    primitives::{Line, PrimitiveStyle, Rectangle},
+    primitives::{Line, PrimitiveStyle},
     text::{Text},
     Drawable,
 };
 use embedded_graphics::draw_target::DrawTarget;
-use embedded_graphics::geometry::{OriginDimensions, Point, Size};
+use embedded_graphics::geometry::{OriginDimensions, Point};
 use embedded_graphics::image::{Image, ImageRaw};
 use embedded_graphics::mono_font::ascii::{FONT_5X7, FONT_6X13};
 use embedded_graphics::primitives::Primitive;
@@ -52,7 +50,7 @@ pub struct DisplayManager {
 }
 
 impl DisplayManager {
-    pub fn new(i2c: I2c<'static, Async>, spawner: Spawner) -> (embassy_sync::channel::DynamicSender<'static, DisplayUpdate>) {
+    pub fn new(i2c: I2c<'static, Async>, spawner: Spawner) -> embassy_sync::channel::DynamicSender<'static, DisplayUpdate> {
         let interface = I2CDisplayInterface::new(i2c);
         let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
             .into_buffered_graphics_mode();
@@ -170,8 +168,8 @@ impl DisplayManager {
 }
 
 #[embassy_executor::task]
-pub async fn handle_updates(mut instance: DisplayManager) {
-    let mut receiver = instance.event_chan.clone();
+pub async fn handle_updates(instance: DisplayManager) {
+    let receiver = instance.event_chan.clone();
     loop {
         match receiver.receive().await {
             DisplayUpdate::SetWifiConnected(connected) => instance.set_wifi_connected(connected).await,

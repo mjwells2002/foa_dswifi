@@ -1,7 +1,7 @@
 use std::env;
 use std::fs::{self, File};
 use std::io::Write;
-use std::path::{Path, PathBuf};
+use std::path::{Path};
 
 
 
@@ -43,7 +43,7 @@ fn main() {
     let base = Path::new("webapp");
     visit_dir(base, base, &mut files);
 
-    for (rel_path, var_name, full_path) in &files {
+    for (_, var_name, full_path) in &files {
         writeln!(
             f,
             "pub static {}: &[u8] = include_bytes!(\"{}\");",
@@ -52,7 +52,7 @@ fn main() {
     }
 
     writeln!(f, "pub static FILES: &[(&str, &[u8])] = &[").unwrap();
-    for (rel_path, var_name, full_path) in &files {
+    for (rel_path, var_name, _) in &files {
         writeln!(f, "    (\"{}\", {}),", rel_path, var_name).unwrap();
     }
     writeln!(f, "];").unwrap();

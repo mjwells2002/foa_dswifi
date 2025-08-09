@@ -1,13 +1,11 @@
-use crate::MaybeUninit;
-use alloc::vec::Vec;
-use ekv::{config, Database, FormatError, MountError, ReadError, ReadTransaction, WriteTransaction};
+use ekv::{config, Database, ReadError, ReadTransaction, WriteTransaction};
 use ekv::flash::PageID;
 use core::ops::Range;
 use defmt::{info, warn};
-use embassy_sync::blocking_mutex::raw::{NoopRawMutex, RawMutex};
+use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_time::Instant;
 use esp_hal::system::software_reset;
-use crate::mk_static_dram2;
+
 pub struct CachedFlashWrapper {
     range: Range<usize>,
     io_buffer: AlignedBuf<{ config::PAGE_SIZE }>,
@@ -44,17 +42,14 @@ impl ekv::flash::Flash for CachedFlashWrapper {
         if offset + data.len() > config::PAGE_SIZE {
             panic!("cant read > 1 page")
         }
-        let sector = self.range.start.div_floor(config::PAGE_SIZE) + page_id.index();
         let address = page_id.index() * config::PAGE_SIZE + self.range.start;
         unsafe {
             match esp_storage::ll::spiflash_read(address as u32, self.io_buffer.0.as_mut_ptr() as *mut u32, self.io_buffer.0.len() as u32) {
                 Ok(_) => {
                     data.copy_from_slice(&self.io_buffer.0[offset..offset+data.len()]);
-                    //info!("read page {}, {}, {}",sector,address, self.io_buffer.0);
                     Ok(())
                 }
                 Err(c) => {
-                    //warn!("Read Error {}",c);
                     Err(c)
                 }
             }

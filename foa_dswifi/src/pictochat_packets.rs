@@ -5,7 +5,6 @@ use ieee80211::scroll;
 use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx, TryIntoCtx};
 use ieee80211::scroll::{Endian, Pread, Pwrite};
 use ieee80211::scroll::Endian::Little;
-use crate::DsWifiClientMask;
 
 pub struct PictochatBeacon {
     pub header: [u8; 4],
@@ -30,10 +29,10 @@ impl TryIntoCtx<()> for PictochatBeacon {
 
     fn try_into_ctx(self, buf: &mut [u8], _: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
-        buf.gwrite_with(self.header, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.chatroom as u8, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.client_count, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.footer, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.header, &mut offset, Little)?;
+        buf.gwrite_with(self.chatroom as u8, &mut offset, Little)?;
+        buf.gwrite_with(self.client_count, &mut offset, Little)?;
+        buf.gwrite_with(self.footer, &mut offset, Little)?;
 
         Ok(offset)
     }
@@ -75,10 +74,10 @@ impl MeasureWith<()> for PictochatHeader {
 impl TryIntoCtx<()> for PictochatHeader {
     type Error = scroll::Error;
 
-    fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {
+    fn try_into_ctx(self, buf: &mut [u8], _: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
-        buf.gwrite_with(self.type_id, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.size_with_header, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.type_id, &mut offset, Little)?;
+        buf.gwrite_with(self.size_with_header, &mut offset, Little)?;
         Ok(offset)
     }
 }
@@ -118,11 +117,11 @@ impl TryIntoCtx<()> for PictochatType45 {
         let mut offset = 0;
 
         buf.gwrite_with(self.header, &mut offset, ctx)?;
-        buf.gwrite_with(self.magic, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.magic, &mut offset, Little)?;
         for member in self.members {
             for o in (0..6).step_by(2) {
-                buf.gwrite_with(member[o+1], &mut offset, Endian::Little)?;
-                buf.gwrite_with(member[o], &mut offset, Endian::Little)?;
+                buf.gwrite_with(member[o+1], &mut offset, Little)?;
+                buf.gwrite_with(member[o], &mut offset, Little)?;
             }
         }
 
@@ -190,11 +189,11 @@ impl TryIntoCtx<()> for PictochatType1 {
     fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
         buf.gwrite_with(self.header, &mut offset, ctx)?;
-        buf.gwrite_with(self.sender_id, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.data_type, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.magic_1, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.data_size, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.magic_2, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.sender_id, &mut offset, Little)?;
+        buf.gwrite_with(self.data_type, &mut offset, Little)?;
+        buf.gwrite_with(self.magic_1, &mut offset, Little)?;
+        buf.gwrite_with(self.data_size, &mut offset, Little)?;
+        buf.gwrite_with(self.magic_2, &mut offset, Little)?;
 
         Ok(offset)
     }
@@ -250,12 +249,12 @@ impl TryIntoCtx<()> for PictochatType2 {
     fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
         buf.gwrite_with(self.header, &mut offset, ctx)?;
-        buf.gwrite_with(self.sending_console_id, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.payload_type, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.payload.len() as u8, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.transfer_flags, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.write_offset, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.magic, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.sending_console_id, &mut offset, Little)?;
+        buf.gwrite_with(self.payload_type, &mut offset, Little)?;
+        buf.gwrite_with(self.payload.len() as u8, &mut offset, Little)?;
+        buf.gwrite_with(self.transfer_flags, &mut offset, Little)?;
+        buf.gwrite_with(self.write_offset, &mut offset, Little)?;
+        buf.gwrite_with(self.magic, &mut offset, Little)?;
         buf.gwrite_with(self.payload.as_slice(), &mut offset, ctx)?;
 
         Ok(offset)
@@ -328,7 +327,7 @@ impl Default for ConsoleIdPayload {
 }
 
 impl MeasureWith<()> for ConsoleIdPayload {
-    fn measure_with(&self, ctx: &()) -> usize {
+    fn measure_with(&self, _: &()) -> usize {
         let mut size = 0;
         size += self.magic.len();
         size += self.to.len();
@@ -344,18 +343,18 @@ impl MeasureWith<()> for ConsoleIdPayload {
 
 impl TryIntoCtx<()> for ConsoleIdPayload {
     type Error = scroll::Error;
-    fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {
+    fn try_into_ctx(self, buf: &mut [u8], _: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
-        buf.gwrite_with(self.magic, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.magic, &mut offset, Little)?;
         for o in (0..6).step_by(2) {
-            buf.gwrite_with(self.to[o+1], &mut offset, Endian::Little)?;
-            buf.gwrite_with(self.to[o], &mut offset, Endian::Little)?;
+            buf.gwrite_with(self.to[o+1], &mut offset, Little)?;
+            buf.gwrite_with(self.to[o], &mut offset, Little)?;
         }
-        buf.gwrite_with(self.name, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.bio, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.colour, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.birth_day, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.birth_month, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.name, &mut offset, Little)?;
+        buf.gwrite_with(self.bio, &mut offset, Little)?;
+        buf.gwrite_with(self.colour, &mut offset, Little)?;
+        buf.gwrite_with(self.birth_day, &mut offset, Little)?;
+        buf.gwrite_with(self.birth_month, &mut offset, Little)?;
 
         Ok(offset)
     }
@@ -364,7 +363,7 @@ impl TryIntoCtx<()> for ConsoleIdPayload {
 impl TryFromCtx<'_, ()> for ConsoleIdPayload {
     type Error = scroll::Error;
 
-    fn try_from_ctx(from: &[u8], ctx: ()) -> Result<(Self, usize), Self::Error> {
+    fn try_from_ctx(from: &[u8], _: ()) -> Result<(Self, usize), Self::Error> {
         let mut offset = 0;
         let magic = from.gread_with(&mut offset, Little)?;
         let mut mac = [0u8;6];
@@ -414,14 +413,14 @@ impl TryIntoCtx<()> for MessagePayload {
 
     fn try_into_ctx(self, buf: &mut [u8], ctx: ()) -> Result<usize, Self::Error> {
         let mut offset = 0;
-        buf.gwrite_with(self.magic, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.subtype, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.magic, &mut offset, Little)?;
+        buf.gwrite_with(self.subtype, &mut offset, Little)?;
         for o in (0..6).step_by(2) {
-            buf.gwrite_with(self.from[o+1], &mut offset, Endian::Little)?;
-            buf.gwrite_with(self.from[o], &mut offset, Endian::Little)?;
+            buf.gwrite_with(self.from[o+1], &mut offset, Little)?;
+            buf.gwrite_with(self.from[o], &mut offset, Little)?;
         }
-        buf.gwrite_with(self.magic_1, &mut offset, Endian::Little)?;
-        buf.gwrite_with(self.safezone, &mut offset, Endian::Little)?;
+        buf.gwrite_with(self.magic_1, &mut offset, Little)?;
+        buf.gwrite_with(self.safezone, &mut offset, Little)?;
         buf.gwrite_with(self.message.as_slice(), &mut offset, ctx)?;
 
         Ok(offset)
@@ -431,11 +430,11 @@ impl TryIntoCtx<()> for MessagePayload {
 impl TryFromCtx<'_, ()> for MessagePayload {
     type Error = scroll::Error;
 
-    fn try_from_ctx(from: &[u8], ctx: ()) -> Result<(Self, usize), Self::Error> {
+    fn try_from_ctx(from: &[u8], _: ()) -> Result<(Self, usize), Self::Error> {
         let mut offset = 0;
         let magic = from.gread_with(&mut offset, Little)?;
         let mut mac = [0u8;6];
-        let subtype = from.gread_with(&mut offset, Endian::Little)?;
+        let subtype = from.gread_with(&mut offset, Little)?;
 
         for o in (0..6).step_by(2) {
             mac[o+1] = from.gread_with(&mut offset, Little)?;
@@ -460,7 +459,7 @@ impl TryFromCtx<'_, ()> for MessagePayload {
     }
 }
 impl MeasureWith<()> for MessagePayload {
-    fn measure_with(&self, ctx: &()) -> usize {
+    fn measure_with(&self, _: &()) -> usize {
         let mut size = 0;
         size += 1; // magic
         size += 1; // subtype

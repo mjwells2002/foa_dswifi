@@ -2,20 +2,19 @@ use core::future::{join};
 use core::marker::PhantomData;
 use core::sync::atomic::{AtomicU16, Ordering};
 use defmt::{debug, error, info, trace, warn};
-use embassy_futures::select::{select, select3, select4, Either, Either3};
+use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer, WithTimeout};
-use esp_hal::dma::TransferDirection::In;
 use foa::esp_wifi_hal::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::esp_wifi_hal::TxErrorBehaviour::Drop;
 use foa::{LMacInterfaceControl, RxQueueReceiver};
 use hex_literal::hex;
 use ieee80211::common::{AssociationID, CapabilitiesInformation, DataFrameSubtype, FCFFlags, FrameType, IEEE80211AuthenticationAlgorithmNumber, IEEE80211StatusCode, SequenceControl};
 use ieee80211::{element_chain, match_frames, supported_rates, GenericFrame};
-use ieee80211::data_frame::{DataFrame, DataFrameReadPayload};
+use ieee80211::data_frame::DataFrame;
 use ieee80211::data_frame::header::DataFrameHeader;
 use ieee80211::elements::{DSSSParameterSetElement, RawIEEE80211Element, VendorSpecificElement};
 use ieee80211::mac_parser::{MACAddress, BROADCAST};
@@ -243,12 +242,6 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         client_manager.remove_client(aid);
     }
-    async fn update_client_rx_time(&self, mac: MACAddress) {
-        let mut client_manager = self.client_manager.lock().await;
-        if let Some(client) = client_manager.get_client_mut(mac) {
-            client.last_heard_from = Instant::now();
-        };
-    }
     async fn handle_bg_rx(
         &self,
         buffer: BorrowedBuffer<'_>,
@@ -350,12 +343,10 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
     }
 
-    async fn send_deauth(&self, target: &[u8; 6]) {
+    async fn send_deauth(&self, _target: &[u8; 6]) {
         //todo: this
     }
     async fn send_ack(&self) {
-        let tx = Instant::now();
-
         let ack = hex!("82000000");
         let frame = DataFrame {
             header: DataFrameHeader {
@@ -562,18 +553,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
     }
 
-    async fn tick(&self, beacon_ticker: &mut Ticker, data_rate_limit: &mut Ticker, timeout_check_rate: &mut Ticker) {
-        let _ = select4(
-            self.send_data_tick(data_rate_limit),
-            self.send_beacon(beacon_ticker),
-            self.handle_timeouts(timeout_check_rate),
-            self.handle_control()
-        ).await;
-    }
-
     async fn interface_input(&self, borrowed_buffer: BorrowedBuffer<'foa>) {
         //info!("InterfaceInput: {} {:x}",borrowed_buffer.rssi(), borrowed_buffer.mpdu_buffer());
-        let rx = Instant::now();
         let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
             return;
         };
@@ -591,9 +572,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                         let frame = generic_frame.parse_to_typed::<DataFrame>().unwrap().unwrap();
                         match frame.payload {
                             Some(data) => {
-                                let (c2h_frame,size) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
-                                let rx_ack = Instant::now();
-                                //info!("ack delay: {}", (rx_ack - rx).as_micros());
+                                let (c2h_frame,_) = ClientToHostDataFrame::try_from_ctx(data, ()).unwrap();
                                 if c2h_frame.payload_size > 0 {
                                     let (frame,size) = c2h_frame.payload.unwrap();
                                     let client_aid = {
@@ -672,7 +651,6 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                             off_channel_request.reject();
                         },
                         Either::Second(buffer) => {self.handle_bg_rx(buffer).await;},
-                        _ => {}
                     }
                 }
             }

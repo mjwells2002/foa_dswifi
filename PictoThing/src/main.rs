@@ -1,10 +1,8 @@
 #![no_std]
 #![no_main]
-#![feature(future_join)]
+#![feature(impl_trait_in_assoc_type)]
 #![feature(ip_from)]
 #![feature(int_roundings)]
-#![feature(impl_trait_in_assoc_type)]
-
 mod internal_flash;
 mod util;
 mod display;
@@ -12,133 +10,66 @@ mod http_server;
 
 extern crate alloc;
 
-use core::slice::from_raw_parts;
 use alloc::string::{String, ToString};
 use alloc::{format, vec};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
-use core::cmp::min;
-use core::ffi::c_void;
-use core::fmt::{Debug, Display};
-use core::mem::{transmute, MaybeUninit};
-use core::{default, mem, slice};
-use core::future::Future;
-use core::hint::black_box;
-use core::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use core::ptr::addr_of_mut;
+use core::mem::MaybeUninit;
+use core::net::{IpAddr, Ipv4Addr, SocketAddr};
 use core::str::FromStr;
-use aligned::A1;
-use block_device_adapters::{BufStream, BufStreamError};
-use defmt::{debug, error, info, warn};
+use defmt::{info, warn};
 use edge_dhcp::server::{Server, ServerOptions};
-use edge_http::io::server::{Connection, DefaultServer, Handler};
-use edge_http::Method;
-use edge_http::ws::{MAX_BASE64_KEY_LEN, MAX_BASE64_KEY_RESPONSE_LEN, NONCE_LEN};
-use edge_nal_embassy::{Tcp, TcpAccept, TcpBuffers, TcpSocket, UdpBuffers, UdpSocket};
+use edge_nal_embassy::UdpBuffers;
 use embassy_executor::Spawner;
-use embassy_futures::select::{select, select3, select4, Either, Either3, Either4, Select};
+use embassy_futures::select::{select, select4, Either, Either4};
 use embassy_futures::yield_now;
-use embassy_net::{IpAddress, IpEndpoint, Ipv4Address, Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
-use embassy_sync::channel::{Channel, DynamicReceiveFuture, DynamicReceiver, DynamicSender, TrySendError};
+use embassy_net::{IpEndpoint, Ipv4Cidr, Stack, StaticConfigV4};
+use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Delay, Duration, Instant, Ticker, Timer, WithTimeout};
+use embassy_time::{Duration, Instant, Ticker, Timer, WithTimeout};
 use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-use esp_hal::{dma_buffers, dma_descriptors, i2c, ram, rng::Rng, timer::timg::TimerGroup, Async};
-use esp_hal::clock::CpuClock::{_240MHz, _80MHz};
-use esp_hal::dma::{DmaPriority, DmaRxBuf, DmaTxBuf};
+use esp_hal::{dma_buffers, i2c, rng::Rng, timer::timg::TimerGroup, Async};
+use esp_hal::clock::CpuClock::_240MHz;
+use esp_hal::dma::{DmaRxBuf, DmaTxBuf};
 use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::peripherals::{SPI2, SPI3};
-use esp_hal::spi::master::{Config, Spi, SpiDma, SpiDmaBus};
+use esp_hal::spi::master::{Config, Spi, SpiDmaBus};
 use esp_hal::spi::Mode;
-use esp_println::println;
 use foa::FoARunner;
 use foa::{FoAResources, VirtualInterface};
 use ieee80211::mac_parser::MACAddress;
-use static_cell::StaticCell;
-use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiClientMaskMath};
-use foa_dswifi::pictochat_application::{PictoChatApplication, PictoChatUserManager, PictochatInterface, PictochatInterfaceEvent, PictochatSharedData};
+use foa_dswifi::DsWiFiSharedResources;
+use foa_dswifi::pictochat_application::{PictoChatApplication, PictochatInterface, PictochatInterfaceEvent, PictochatSharedData};
 use foa_dswifi::runner::DsWiFiRunner;
-use static_cell::make_static;
 use embassy_net::{
     dns::DnsSocket,
-    tcp::client::{TcpClient, TcpClientState},
-    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
+    DhcpConfig, StackResources as NetStackResources,
 };
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_fatfs::{FsOptions};
-use embedded_io_async::{ErrorType, Read, Seek, SeekFrom, Write};
-use embedded_sdmmc::{Block, BlockDevice, BlockIdx, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
-use embedded_sdmmc::sdcard::Error;
-use esp_alloc::HeapStats;
-use esp_hal::uart::{Parity, Uart};
+use embedded_io_async::{Read, Write};
 use {esp_backtrace as _, defmt as _};
 use foa_dswifi::pictochat_packets::MessagePayload;
-use embedded_storage::{ReadStorage, Storage};
-use esp_hal::gpio::Level::Low;
-use esp_hal::system::{software_reset, CpuControl};
 use esp_hal::time::Rate;
-use esp_hal::xtensa_lx::timer::delay;
-use esp_storage::FlashStorage;
-use edge_nal::{TcpBind, UdpBind};
-use edge_nal::io::ReadExactError;
-use ekv::Database;
+use edge_nal::{UdpBind};
 use embassy_net::udp::PacketMetadata;
 use embassy_net_esp_hosted::{Control, Security};
-use embedded_graphics::Drawable;
-use embedded_graphics::geometry::{Point, Size};
-use embedded_graphics::mono_font::ascii::{FONT_4X6, FONT_6X10, FONT_6X13};
-use embedded_graphics::mono_font::MonoTextStyleBuilder;
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::primitives::{Primitive, PrimitiveStyle, Rectangle};
-use embedded_graphics::text::{Baseline, Text};
-use esp_hal::config::WatchdogConfig;
 use esp_hal::i2c::master::I2c;
 use esp_hal::psram::psram_raw_parts;
-use esp_hal_embassy::Executor;
-use ssd1306::{I2CDisplayInterface, Ssd1306};
-use ssd1306::mode::DisplayConfig;
-use ssd1306::prelude::Brightness;
-use ssd1306::rotation::DisplayRotation;
-use ssd1306::size::DisplaySize128x64;
 use crate::display::DisplayUpdate;
-use crate::internal_flash::{CachedFlashWrapper, InternalFlash};
+use crate::internal_flash::InternalFlash;
 use embassy_net_esp_hosted::ApStatus;
-use embassy_net_esp_hosted::Bandwidth::{Ht20, Ht40};
+use embassy_net_esp_hosted::Bandwidth::Ht20;
 use esp_bootloader_esp_idf::ota::Slot;
-use esp_bootloader_esp_idf::partitions::{DataPartitionSubType, PartitionEntry};
+use esp_bootloader_esp_idf::partitions::DataPartitionSubType;
 use crate::http_server::http_listen_task;
 use crate::util::get_file;
+
+use {esp_backtrace as _, defmt as _};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
 
-
-//const WEB_PAGE: &[u8] = include_bytes!("index.html.gz");
-//const BAD_APPLE: &[u8] = include_bytes!("bad_apple_small.raw");
-//const HEAP_SIZE: usize = 30 * 1000;
-//const HEAP_2_SIZE: usize = 60 * 1000;
-
-//static mut APP_CORE_STACK: esp_hal::system::Stack<8192> = esp_hal::system::Stack::new();
-
 fn init_heap(psram_start: *mut u8, psram_size: usize) {
-    //static mut HEAP: MaybeUninit<[u8; HEAP_SIZE]> = MaybeUninit::uninit();
-    // #[link_section =".dram2_uninit"]
-    // static mut HEAP_2: MaybeUninit<[u8; HEAP_2_SIZE]> = MaybeUninit::uninit();
-
     unsafe {
-        // esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
-        //     HEAP.as_mut_ptr() as *mut u8,
-        //     HEAP_SIZE,
-        //     esp_alloc::MemoryCapability::Internal.into(),
-        // ));
-
-        // esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
-        //     HEAP_2.as_mut_ptr() as *mut u8,
-        //     HEAP_2_SIZE,
-        //     esp_alloc::MemoryCapability::Internal.into(),
-        // ));
-
         esp_alloc::HEAP.add_region(esp_alloc::HeapRegion::new(
             psram_start,
             psram_size,
@@ -158,7 +89,7 @@ async fn dswifi_task(mut sta_runner: DsWiFiRunner<'static, 'static>) -> ! {
 }
 
 #[embassy_executor::task]
-async fn pictochat_task(mut pictochat_app: &'static mut PictoChatApplication<'static>) -> ! {
+async fn pictochat_task(pictochat_app: &'static mut PictoChatApplication<'static>) -> ! {
     pictochat_app.run().await
 }
 
@@ -191,7 +122,6 @@ async fn esph_wifi_task(
 
 #[embassy_executor::task]
 async fn udp_send_task(stack: Stack<'static>) {
-    let mut buf = vec![0u8; 1_000];
     let mut sock_rx_buffer = vec![0u8; 1200];
     let mut sock_tx_buffer= vec![0u8; 1200];
     let mut rx_meta = vec![PacketMetadata::EMPTY; 16];
@@ -213,7 +143,7 @@ async fn udp_send_task(stack: Stack<'static>) {
 
 #[embassy_executor::task]
 async fn tcp_listen_task(stack: Stack<'static>) {
-    let mut buf = vec![0u8; 10_000];
+    let buf = vec![0u8; 10_000];
     let mut sock_rx_buffer = vec![0u8; 100_000];
     let mut sock_tx_buffer= vec![0u8; 100_000];
     loop {
@@ -234,27 +164,6 @@ async fn tcp_listen_task(stack: Stack<'static>) {
             if r.is_err() {
                 break;
             }
-            // let n = match socket.read(&mut buf).await {
-            //     Ok(0) => {
-            //         warn!("read EOF");
-            //         break;
-            //     }
-            //     Ok(n) => n,
-            //     Err(e) => {
-            //         warn!("{:?}", e);
-            //         break;
-            //     }
-            // };
-            // if n == 1 {
-            //     socket.write_all("PI".as_bytes()).await.expect("TODO: panic message");
-            // } else if n == 14 {
-            //     let mut totx = [0;14];
-            //     totx.copy_from_slice(&buf[0..14]);
-            //     tx_channel.send(totx).await;
-            //     socket.write_all("OK".as_bytes()).await.expect("TODO: panic message");
-            // } else {
-            //     //warn!("n == {}",n);
-            // }
         }
     }
 }
@@ -271,9 +180,9 @@ fn build_handshake(protocol_version: u16) -> [u8; 3] {
     let protocol_bytes = protocol_version.to_be_bytes();
     [PacketType::HANDSHAKE as u8, protocol_bytes[0], protocol_bytes[1]]
 }
-fn parse_handshake(handshake: [u8;3]) -> Result<u16,()> {
+fn parse_handshake(handshake: [u8; 3]) -> Result<u16, ()> {
     if handshake[0] == PacketType::HANDSHAKE as u8 {
-        let mut temp = [0u8;2];
+        let mut temp = [0u8; 2];
         temp.copy_from_slice(&handshake[1..]);
         let version = u16::from_be_bytes(temp);
         Ok(version)
@@ -383,7 +292,7 @@ async fn dhcp_server_task(stack: Stack<'static>) {
     let udp = edge_nal_embassy::Udp::new(stack,&box_buffers);
     let mut socket = udp.bind(SocketAddr::new(IpAddr::V4(Ipv4Addr::UNSPECIFIED),edge_dhcp::io::DEFAULT_SERVER_PORT)).await.unwrap();
     let mut gw_buf = [ip];
-    let mut dns_buf = [ip];
+    let dns_buf = [ip];
     let mut server_opt = ServerOptions::new(ip, Some(&mut gw_buf));
     server_opt.captive_url = Some("http://10.82.50.1");
     server_opt.dns = &dns_buf;
@@ -481,7 +390,7 @@ async fn main(spawner: Spawner) {
 
     info!("Hello, world!");
 
-    let mut i2c = I2c::new(
+    let i2c = I2c::new(
         peripherals.I2C0,
         i2c::master::Config::default(),
     )
@@ -490,7 +399,7 @@ async fn main(spawner: Spawner) {
         .with_scl(peripherals.GPIO33)
         .into_async();
 
-    let mut display = display::DisplayManager::new(i2c,spawner);
+    let display = display::DisplayManager::new(i2c,spawner);
 
     display.send(DisplayUpdate::AddLogMessage(String::from("Getting Ready ..."))).await;
 
@@ -557,7 +466,7 @@ async fn main(spawner: Spawner) {
         info!("Manual Format Triggered ...");
         led.set_high();
         should_erase = true;
-        for i in 0..13 {
+        for _ in 0..13 {
             let was_button_released = force_ekv_erase.wait_for_high().with_timeout(Duration::from_millis(250)).await;
             if was_button_released.is_ok() {
                 should_erase = false;
@@ -578,10 +487,10 @@ async fn main(spawner: Spawner) {
     let mut psk_size: usize = 0;
 
     if should_erase {
-        //display.send(DisplayUpdate::AddLogMessage(String::from("Erasing Config ..."))).await;
+        display.send(DisplayUpdate::AddLogMessage(String::from("Erasing Config ..."))).await;
         flash.format_ekv().await;
         led.set_low();
-        //display.send(DisplayUpdate::AddLogMessage(String::from("Done"))).await;
+         display.send(DisplayUpdate::AddLogMessage(String::from("Done"))).await;
     }
 
     (no_config, ssid_size) = flash.read_key(b"wifi_ssid", &mut wifi_ssid_stack).await;
@@ -743,7 +652,7 @@ async fn main(spawner: Spawner) {
 
     //static ESP_STATE: StaticCell<embassy_net_esp_hosted::State> = StaticCell::new();
     let esp_state = mk_static_dram2!(embassy_net_esp_hosted::State, embassy_net_esp_hosted::State::new());
-    let (device, mut control, runner) = embassy_net_esp_hosted::new(
+    let (device, control, runner) = embassy_net_esp_hosted::new(
         esp_state,
         esph_spi_device,
         esph_handshake,
@@ -763,7 +672,7 @@ async fn main(spawner: Spawner) {
         device,
         embassy_net::Config::dhcpv4(DhcpConfig::default()),
         net_stack_resources,
-        1234,
+        seed,
     );
 
     spawner.spawn(net_task(net_runner)).unwrap();

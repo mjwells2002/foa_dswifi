@@ -1,99 +1,24 @@
 
-use core::slice::from_raw_parts;
 use alloc::string::{String, ToString};
 use alloc::{format, vec};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use core::cell::UnsafeCell;
-use core::cmp::min;
-use core::ffi::c_void;
 use core::fmt::{Debug, Display};
-use core::mem::{transmute, MaybeUninit};
-use core::{default, mem, slice};
-use core::future::Future;
-use core::hint::black_box;
-use core::net::{IpAddr, Ipv4Addr, SocketAddr, SocketAddrV4};
-use core::ptr::addr_of_mut;
-use core::str::FromStr;
-use aligned::A1;
-use block_device_adapters::{BufStream, BufStreamError};
-use defmt::{debug, error, info, warn};
-use edge_dhcp::server::{Server, ServerOptions};
-use edge_http::io::server::{Connection, DefaultServer, Handler};
+use defmt::info;
+use edge_http::io::server::{Connection, Handler};
 use edge_http::Method;
-use edge_http::ws::{MAX_BASE64_KEY_LEN, MAX_BASE64_KEY_RESPONSE_LEN, NONCE_LEN};
-use edge_nal_embassy::{Tcp, TcpAccept, TcpBuffers, TcpSocket, UdpBuffers, UdpSocket};
-use embassy_executor::Spawner;
-use embassy_futures::select::{select, select3, select4, Either, Either3, Either4, Select};
-use embassy_futures::yield_now;
-use embassy_net::{IpAddress, IpEndpoint, Ipv4Address, Ipv4Cidr, Runner, Stack, StackResources, StaticConfigV4};
-use embassy_sync::channel::{Channel, DynamicReceiveFuture, DynamicReceiver, DynamicSender, TrySendError};
+use edge_nal_embassy::TcpBuffers;
+use embassy_net::Stack;
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Delay, Duration, Instant, Ticker, Timer, WithTimeout};
-use embedded_hal_bus::spi::{ExclusiveDevice, NoDelay};
-use esp_hal::{dma_buffers, dma_descriptors, i2c, ram, rng::Rng, timer::timg::TimerGroup, Async};
-use esp_hal::clock::CpuClock::{_240MHz, _80MHz};
-use esp_hal::dma::{DmaPriority, DmaRxBuf, DmaTxBuf};
-use esp_hal::gpio::{Input, InputConfig, Level, Output, OutputConfig, Pull};
-use esp_hal::peripherals::{SDHOST, SPI2, SPI3};
-use esp_hal::spi::master::{Config, Spi, SpiDma, SpiDmaBus};
-use esp_hal::spi::Mode;
-use esp_println::println;
-use foa::FoARunner;
-use foa::{FoAResources, VirtualInterface};
-use ieee80211::mac_parser::MACAddress;
-use static_cell::StaticCell;
-use foa_dswifi::{DsWiFiInitInfo, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWiFiSharedResources, DsWifiClientMaskMath};
-use foa_dswifi::pictochat_application::{PictoChatApplication, PictoChatUserManager, PictochatInterface, PictochatInterfaceEvent, PictochatSharedData};
-use foa_dswifi::runner::DsWiFiRunner;
-use static_cell::make_static;
-use embassy_net::{
-    dns::DnsSocket,
-    tcp::client::{TcpClient, TcpClientState},
-    DhcpConfig, Runner as NetRunner, StackResources as NetStackResources,
-};
+use embassy_time::Timer;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embedded_fatfs::{FsOptions};
-use embedded_io_async::{ErrorType, Read, Seek, SeekFrom, Write};
-use embedded_sdmmc::{Block, BlockDevice, BlockIdx, SdCard, TimeSource, Timestamp, VolumeIdx, VolumeManager};
-use embedded_sdmmc::sdcard::Error;
+use embedded_io_async::{Read, Write};
 use esp_alloc::HeapStats;
-use esp_hal::uart::{Parity, Uart};
 use {esp_backtrace as _, defmt as _};
-use foa_dswifi::pictochat_packets::MessagePayload;
-use embedded_storage::{ReadStorage, Storage};
-use esp_hal::gpio::Level::Low;
-use esp_hal::system::{software_reset, CpuControl};
-use esp_hal::time::Rate;
-use esp_hal::xtensa_lx::timer::delay;
-use esp_storage::FlashStorage;
-use edge_nal::{TcpBind, UdpBind};
-use edge_nal::io::ReadExactError;
-use ekv::Database;
-use embassy_net::udp::PacketMetadata;
-use embassy_net_esp_hosted::{Control, Security};
-use embedded_graphics::Drawable;
-use embedded_graphics::geometry::{Point, Size};
-use embedded_graphics::mono_font::ascii::{FONT_4X6, FONT_6X10, FONT_6X13};
-use embedded_graphics::mono_font::MonoTextStyleBuilder;
-use embedded_graphics::pixelcolor::BinaryColor;
-use embedded_graphics::primitives::{Primitive, PrimitiveStyle, Rectangle};
-use embedded_graphics::text::{Baseline, Text};
-use esp_hal::config::WatchdogConfig;
-use esp_hal::i2c::master::I2c;
-use esp_hal::psram::psram_raw_parts;
-use esp_hal_embassy::Executor;
-use ssd1306::{I2CDisplayInterface, Ssd1306};
-use ssd1306::mode::DisplayConfig;
-use ssd1306::prelude::Brightness;
-use ssd1306::rotation::DisplayRotation;
-use ssd1306::size::DisplaySize128x64;
-use crate::display::DisplayUpdate;
-use crate::internal_flash::{CachedFlashWrapper, InternalFlash};
-use embassy_net_esp_hosted::ApStatus;
-use embassy_net_esp_hosted::Bandwidth::{Ht20, Ht40};
-use esp_bootloader_esp_idf::ota::Slot;
-use esp_bootloader_esp_idf::partitions::{DataPartitionSubType, PartitionEntry};
+use esp_hal::system::software_reset;
+use edge_nal::{TcpBind};
+use embassy_net_esp_hosted::Control;
+use crate::internal_flash::InternalFlash;
 use crate::util::get_file;
 
 fn guess_mime_type(filename: &str) -> &'static str {
@@ -215,7 +140,7 @@ impl Handler for HttpHandler {
     {
 
         let method = conn.headers()?.method.clone();
-        let path: Vec<_> = conn.headers()?.path.clone().split("/").collect();
+        let path: Vec<_> = conn.headers()?.path.split("/").collect();
         if path.len() > 2 {
             match (path[1], path[2]) {
                 ("api","reboot") => {
@@ -306,7 +231,7 @@ impl Handler for HttpHandler {
             }
         }
 
-        let path = conn.headers()?.path.clone();
+        let path = conn.headers()?.path;
         let mut path_strip = if path.starts_with("/") {
             path.strip_prefix("/").unwrap().to_string()
         } else { path.parse().unwrap() };

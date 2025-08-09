@@ -1,6 +1,5 @@
-use bitflags::{bitflags, Flags};
+use bitflags::{bitflags};
 use defmt::error;
-use embedded_io_async::Read;
 use ieee80211::scroll;
 use ieee80211::scroll::ctx::{MeasureWith, TryFromCtx, TryIntoCtx};
 use ieee80211::scroll::{Endian, Pread, Pwrite};

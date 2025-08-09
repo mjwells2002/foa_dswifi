@@ -1,19 +1,16 @@
 use alloc::vec;
 use alloc::vec::Vec;
 use core::cmp::PartialEq;
-use core::intrinsics::unreachable;
 use core::slice::SlicePattern;
 use defmt::{error, info, warn, Format};
 use embassy_futures::join::join3;
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender, TryReceiveError, TrySendError};
+use embassy_sync::channel::{Channel, DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
-use embassy_time::{Duration, Ticker};
-use esp_hal::gpio::Event;
 use ieee80211::mac_parser::MACAddress;
-use ieee80211::scroll::{Endian, Pread, Pwrite};
+use ieee80211::scroll::{Pread, Pwrite};
 use ieee80211::scroll::ctx::MeasureWith;
-use crate::{DsWiFiClientEvent, DsWiFiControl, DsWiFiInterface, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWifiClientMask, DsWifiClientMaskMath};
+use crate::{DsWiFiClientEvent, DsWiFiControl, DsWiFiInterfaceControlEvent, DsWiFiInterfaceControlEventResponse, DsWifiClientMask};
 use crate::DsWiFiControlEvent::FrameGenerated;
 use crate::packets::HostToClientFlags;
 use crate::pictochat_application::PictochatHandshakePhase::{Connected, Handshake};
@@ -141,7 +138,7 @@ pub struct PictoChatApplication<'res> {
 impl<'res> PictoChatApplication<'res> {
     pub async fn new(ds_wi_fi_control: DsWiFiControl<'res>, pictochat_shared_data: &'res mut PictochatSharedData) -> (Self,PictochatInterface<'res>) {
 
-        let mut pictochat_app = PictoChatApplication {
+        let pictochat_app = PictoChatApplication {
             ds_wifi_control: ds_wi_fi_control,
             user_state_manager: Mutex::new(PictoChatUserManager {
                 users: [const { None };15],
@@ -158,7 +155,7 @@ impl<'res> PictoChatApplication<'res> {
             }),
         };
 
-        let mut interface = {
+        let interface = {
             PictochatInterface {
                 inbound_queue: pictochat_shared_data.message_queue_inbound.dyn_receiver(),
                 outbound_queue: pictochat_shared_data.message_queue_outbound.dyn_sender(),
@@ -231,7 +228,7 @@ impl<'res> PictoChatApplication<'res> {
                     tx_out.size = echo.len() as u16;
                     //info!("echo len: {}",echo.len())
                 }
-                PictoChatState::IdentConsole((mac,ident_type,other_ident_type)) => {
+                PictoChatState::IdentConsole((mac,_ident_type,_other_ident_type)) => {
                     if self.state_queue.free_capacity() > 4 {
                         self.state_queue.try_send(PictoChatState::IdentConsoleInternalStage13(0)).expect("Failed to send state");
                         self.state_queue.try_send(PictoChatState::IdentConsoleInternalStage24((mac,[0x03,0x00]))).expect("Failed to send state");
@@ -242,7 +239,7 @@ impl<'res> PictoChatApplication<'res> {
                         panic!("Not enough space in queue");
                     }
                 }
-                PictoChatState::RequestIdent((id)) => {
+                PictoChatState::RequestIdent(id) => {
                     tx_out.flags = HostToClientFlags::from_bits(29).unwrap();
                     let ident = PictochatType1 {
                         sender_id: id,
@@ -356,7 +353,7 @@ impl<'res> PictoChatApplication<'res> {
     }
     async fn rx_wait_loop(&self) -> ! {
         loop {
-            let (data_raw,id,mac,size) = self.ds_wifi_control.data_rx.receive().await;
+            let (data_raw,id,mac,_) = self.ds_wifi_control.data_rx.receive().await;
             //info!("Received data: {}", data_raw[0]);
             let header: PictochatHeader = data_raw.pread(0).unwrap();
             //info!("Header: {:?}", header.type_id);
@@ -416,7 +413,7 @@ impl<'res> PictoChatApplication<'res> {
                 if parsed.transfer_flags == 1 {
                     let mut inflight = self.inflight_data.lock().await;
                     if inflight.inflight_data.is_some() {
-                        let mut buf = inflight.inflight_data.take().unwrap();
+                        let buf = inflight.inflight_data.take().unwrap();
                         if buf[1] == 1 ||  buf[1] == 0 {
                             let consoleid: ConsoleIdPayload = buf.as_slice().pread(0).unwrap();
                             let mut user_state_manager = self.user_state_manager.lock().await;
@@ -461,7 +458,7 @@ impl<'res> PictoChatApplication<'res> {
         loop {
             let client_event = self.ds_wifi_control.event_rx.receive().await;
             match client_event {
-                DsWiFiClientEvent::Connected(mac) => {
+                DsWiFiClientEvent::Connected(_mac) => {
                     //info!("Client Connected: {:?}", mac);
 
 
