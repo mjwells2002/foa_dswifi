@@ -17,3 +17,14 @@
         }
     }};
 }
+
+include!(concat!(env!("OUT_DIR"), "/embedded.rs"));
+
+pub fn get_file(name: &str) -> Option<&'static [u8]> {
+    for (n, data) in FILES {
+        if *n == name {
+            return Some(*data);
+        }
+    }
+    None
+}
