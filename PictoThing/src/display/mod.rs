@@ -176,12 +176,6 @@ pub async fn handle_updates(instance: DisplayManager) {
             DisplayUpdate::SetCloudConnected(connected) => instance.set_cloud_connected(connected).await,
             DisplayUpdate::SetClientsConnected(count) => instance.set_clients_connected(count).await,
             DisplayUpdate::AddLogMessage(msg) => instance.add_log_message(msg).await,
-            DisplayUpdate::AddClientConnected => {
-                instance.set_clients_connected(1).await;
-            }
-            DisplayUpdate::RemoveClientConnected => {
-                instance.set_clients_connected(2).await;
-            }
         }
     }
 }
@@ -193,6 +187,4 @@ pub enum DisplayUpdate {
     SetCloudConnected(bool),
     SetClientsConnected(u8),
     AddLogMessage(String),
-    AddClientConnected,
-    RemoveClientConnected,
 }
