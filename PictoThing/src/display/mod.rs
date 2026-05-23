@@ -3,9 +3,10 @@ use ssd1306::rotation::DisplayRotation;
 use ssd1306::size::DisplaySize128x64;
 use alloc::string::String;
 use alloc::vec::Vec;
-use embassy_executor::Spawner;
-use embassy_sync::blocking_mutex::raw::NoopRawMutex;
-use embassy_sync::channel::{Channel, DynamicReceiver};
+use embassy_executor::{SendSpawner, Spawner};
+use embassy_sync::blocking_mutex::CriticalSectionMutex;
+use embassy_sync::blocking_mutex::raw::{CriticalSectionRawMutex, NoopRawMutex};
+use embassy_sync::channel::{Channel, DynamicReceiver, Sender};
 use embassy_sync::mutex::{Mutex, MutexGuard};
 use embedded_graphics::{
     mono_font::MonoTextStyle,
@@ -50,7 +51,7 @@ pub struct DisplayManager {
 }
 
 impl DisplayManager {
-    pub fn new(i2c: I2c<'static, Async>, spawner: Spawner) -> embassy_sync::channel::DynamicSender<'static, DisplayUpdate> {
+    pub fn new<'ch>(i2c: I2c<'static, Async>, spawner: Spawner) -> Sender<'ch, CriticalSectionRawMutex, DisplayUpdate, 5> {
         let interface = I2CDisplayInterface::new(i2c);
         let mut display = Ssd1306::new(interface, DisplaySize128x64, DisplayRotation::Rotate0)
             .into_buffered_graphics_mode();
@@ -59,9 +60,9 @@ impl DisplayManager {
         display.clear(BinaryColor::Off).unwrap();
         display.flush().unwrap();
 
-        let channel = mk_static_dram2!(Channel<NoopRawMutex, DisplayUpdate, 5>,embassy_sync::channel::Channel::new());
+        let channel = mk_static_dram2!(Channel<CriticalSectionRawMutex, DisplayUpdate, 5>,embassy_sync::channel::Channel::new());
 
-        let r = channel.dyn_sender().clone();
+        let r = channel.sender().clone();
         let t = channel.dyn_receiver();
 
         let display_manager = Self {

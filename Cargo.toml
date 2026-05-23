@@ -1,6 +1,7 @@
 [workspace]
-members = [ "PictoThing","foa_dswifi"]
+members = [ "PictoThing", "foa_dswifi"]
 resolver = "2"
+
 
 [patch.crates-io]
 

@@ -3,14 +3,20 @@ name = "PictoThing"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+test = false
+bench = false
+name = "PictoThing"
+path = "./src/main.rs"
+
 
 [dependencies]
 foa_dswifi = { path = "../foa_dswifi/" }
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32", "defmt"]}
-esp-hal = { version = "1.0.0-rc.0", features = ["esp32", "unstable"] }
+esp-hal = { version = "1.0.0-rc.0", features = ["esp32", "unstable", "psram", "default"] }
 esp-bootloader-esp-idf = {  version = "0.2.0", features = ["esp32","defmt"] }
 esp-hal-embassy = { version = "0.9.0", features = ["esp32", "defmt"] }
-esp-alloc = { version = "0.8.0", features = ["defmt"] }
+esp-alloc = { version = "0.8.0", features = ["defmt", "nightly"] }
 esp-backtrace = { version = "0.17.0", features = ["esp32", "panic-handler", "println"] }
 esp-println = { version = "0.15.0", features = ["defmt-espflash","critical-section","uart","esp32"], default-features = false }
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
@@ -20,18 +26,17 @@ embedded-hal-bus = { version = "0.3.0", features = ["async"] }
 embassy-net-esp-hosted = { version = "0.2.0", features = ["defmt"]}
 static_cell = { version = "2.1.1", features = ["nightly"] }
 ieee80211 = { version = "0.5.7", features = ["default", "crypto", "defmt"]}
-embedded-io-async = "0.6.1"
+embedded-io-async = { version = "0.6.1", features = ["defmt-03"] }
 embassy-futures = "0.1.1"
-embassy-sync = "0.7.0"
+embassy-sync = "0.7.1"
 defmt = "1.0.1"
-embedded-storage = { version = "0.3.1", features = []}
+# embedded-storage = { version = "0.3.1", features = []}
 esp-storage = { version = "0.7.0", features = ["esp32"] }
 embedded-sdmmc = {  version = "0.9.0" }
 mbrs = { version = "0.3.1", default-features = false, features = ["no-std"]}
-embedded-fatfs = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "embedded-fatfs", default-features = false, features = ["defmt","alloc","lfn","unicode"]}
-#sdspi = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "sdspi", features = ["defmt"]}
-block-device-adapters = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "block-device-adapters", features = ["defmt"]}
-block-device-driver = { git = "https://github.com/MabezDev/embedded-fatfs.git", package = "block-device-driver"}
+embedded-fatfs = { path = "/home/bread/CLionProjects/embedded-fatfs/embedded-fatfs", package = "embedded-fatfs", default-features = false, features = ["alloc","lfn","unicode","dirty-file-panic"]}
+sdspi = { path = "/home/bread/CLionProjects/embedded-fatfs/sdspi", package = "sdspi", features = ["defmt"]}
+block-device-adapters = { path = "/home/bread/CLionProjects/embedded-fatfs/block-device-adapters", package = "block-device-adapters", features = ["defmt"]}
 aligned = "0.4.2"
 ekv = { git = "https://github.com/embassy-rs/ekv.git", features = ["defmt","page-size-4096","align-4","max-page-count-256","max-value-size-2048"]}
 edge-http = { version = "0.6.0" }
@@ -42,5 +47,7 @@ edge-dhcp = { version = "0.6.0" }
 edge-captive = { version = "0.6.0" }
 ssd1306 = {  version = "0.10.0", features = ["async", "graphics"] }
 embedded-graphics = "0.8.1"
-embedded-sprites = "0.2.0"
-cfg-if = "1.0.1"
+#embedded-sprites = "0.2.0"
+#cfg-if = "1.0.1"
+blinksy = { version = "0.10.0",features = ["async"] }
+blinksy-esp = { version = "0.10.0",features = ["async","esp32"] }

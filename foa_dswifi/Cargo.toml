@@ -4,12 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 
+[lib]
+test = false
+bench = false
+
 [dependencies]
 foa = { git = "https://github.com/esp32-open-mac/FoA.git", package = "foa", features = ["esp32"]}
-esp-hal = { version = "1.0.0-rc.0", features = ["esp32", "defmt", "unstable", "psram"] }
+esp-hal = { version = "1.0.0-rc.0", features = ["esp32", "defmt", "unstable"] }
 embassy-time = { version = "0.4.0", features = ["generic-queue-8", "defmt"] }
 ieee80211 = {  version = "0.5.7", features = ["default","crypto", "defmt"]}
-embedded-io-async = "0.6.1"
 embassy-futures = "0.1.1"
 embassy-sync = "0.7.0"
 hex-literal = "1.0.0"

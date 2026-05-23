@@ -8,6 +8,7 @@ use embassy_sync::channel::{DynamicReceiver, DynamicSender};
 use embassy_sync::mutex::Mutex;
 use embassy_sync::signal::Signal;
 use embassy_time::{Duration, Instant, Ticker, Timer, WithTimeout};
+use esp_hal::ram;
 use foa::esp_wifi_hal::{BorrowedBuffer, TxErrorBehaviour, TxParameters, WiFiRate};
 use foa::esp_wifi_hal::TxErrorBehaviour::Drop;
 use foa::{LMacInterfaceControl, RxQueueReceiver};
@@ -98,6 +99,7 @@ fn calculate_payload_time(rate_mbps: u16, frame_size: usize) -> u16 {
 
 
 impl<'foa> DsWiFiRunner<'_,'foa> {
+    #[ram]
     async fn handle_auth_frame(&self, auth: AuthenticationFrame<'_>) {
         if auth.body.authentication_algorithm_number != IEEE80211AuthenticationAlgorithmNumber::OpenSystem {
             info!("Got Auth Frame but it was not OpenSystem");
@@ -169,11 +171,22 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
     }
 
+    #[ram]
     async fn handle_assoc_req_frame(&self, assoc: AssociationRequestFrame<'_>) {
         //info!("assoc request");
+        if assoc.header.receiver_address != MACAddress::from(self.mac_address) {
+            info!("got assoc request for other device");
+            return;
+        }
         let mut client_manager = self.client_manager.lock().await;
 
-        let client = client_manager.get_client(assoc.header.transmitter_address).unwrap();
+        let client = client_manager.get_client(assoc.header.transmitter_address);
+
+        if client.is_none() {
+            info!("got assoc request from client that doesn't exist");
+            return;
+        }
+        let client = client.unwrap();
 
         let mut caps = CapabilitiesInformation::new();
         caps.set_is_ess(true);
@@ -228,6 +241,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         Timer::after_micros(500).await;
     }
 
+    #[ram]
     async fn handle_deauth(&self, deauth: DeauthenticationFrame<'_>) {
         let mut client_manager = self.client_manager.lock().await;
 
@@ -242,6 +256,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
 
         client_manager.remove_client(aid);
     }
+
+    #[ram]
     async fn handle_bg_rx(
         &self,
         buffer: BorrowedBuffer<'_>,
@@ -260,6 +276,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         };
     }
 
+    #[ram]
     async fn send_beacon(&self,ticker: &mut Ticker) {
         ticker.next().await;
         {
@@ -346,6 +363,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
     async fn send_deauth(&self, _target: &[u8; 6]) {
         //todo: this
     }
+
+    #[ram]
     async fn send_ack(&self) {
         let ack = hex!("82000000");
         let frame = DataFrame {
@@ -381,6 +400,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
             }, false
         ).await;
     }
+
+    #[ram]
     async fn handle_timeouts(&self, ticker: &mut Ticker) {
         ticker.next().await;
         let mut timed_clients: [Option<AssociationID>; MAX_CLIENTS] = [None; MAX_CLIENTS];
@@ -405,6 +426,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
     }
 
+    #[ram]
     async fn send_data_tick(&self, ticker: &mut Ticker) {
         ticker.next().await;
 
@@ -435,7 +457,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
 
 
-        let payload = self.data_tx_mutex.lock().await;
+        let mut payload = self.data_tx_mutex.lock().await;
 
         //info!("sending data frame with payload size {}", payload.size);
 
@@ -506,8 +528,12 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
                     let mut client_manager = self.client_manager.lock().await;
                     if let Some(client) = client_manager.get_client_mut(ack_from) {
                         let ack = Instant::now();
-                        debug!("ack latency: {} / {}", (ack - tx).as_micros(), (ack - ack_enqueue_time).as_micros());
-                        Timer::after_micros(450).await;
+
+                        // if (ack - tx).as_micros() > 500 {
+                        //     warn!("ack latency: {} / {}", (ack - tx).as_micros(), (ack - ack_enqueue_time).as_micros());
+                        // }
+                        //Timer::at(tx + Duration::from_micros(400)).await;
+                        Timer::at(ack_enqueue_time + Duration::from_micros(200)).await;
                         self.send_ack().await;
                         client.last_heard_from = Instant::now();
                         mask.mask_subtract(client.association_id.get_mask_bits());
@@ -520,6 +546,9 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         if mask.is_empty() {
             debug!("signalling FrameRequired");
             self.data_tx_signal.signal(FrameRequired);
+        } else {
+            //this is a hack, this bit seems to do nothing and i wanted a simple way to see retransmitted frames and was too lazy to add more data shared between ticks
+            payload.flags.set(HostToClientFlags::RESERVED_6, true);
         }
 
         {
@@ -535,6 +564,8 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         Timer::after_micros(800).await;
 
     }
+
+    #[ram]
     async fn handle_control(&self) {
         let request = self.control_responder.wait_for_request().await;
         match request {
@@ -553,6 +584,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
     }
 
+    #[ram]
     async fn interface_input(&self, borrowed_buffer: BorrowedBuffer<'foa>) {
         //info!("InterfaceInput: {} {:x}",borrowed_buffer.rssi(), borrowed_buffer.mpdu_buffer());
         let Ok(generic_frame) = GenericFrame::new(borrowed_buffer.mpdu_buffer(), false) else {
@@ -607,6 +639,7 @@ impl<'foa> DsWiFiRunner<'_,'foa> {
         }
     }
 
+    #[ram]
     pub async fn run(&mut self) -> ! {
         info!("Runner Says Hi");
 

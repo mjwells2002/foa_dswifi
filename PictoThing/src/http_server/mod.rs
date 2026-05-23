@@ -4,13 +4,15 @@ use alloc::{format, vec};
 use alloc::boxed::Box;
 use alloc::vec::Vec;
 use core::fmt::{Debug, Display};
+use aligned::A1;
+use block_device_adapters::{BufStream, StreamSlice};
 use defmt::info;
 use edge_http::io::server::{Connection, Handler};
 use edge_http::Method;
 use edge_nal_embassy::TcpBuffers;
 use embassy_net::Stack;
 use embassy_sync::mutex::Mutex;
-use embassy_time::Timer;
+use embassy_time::{Delay, Timer};
 use embassy_sync::blocking_mutex::raw::NoopRawMutex;
 use embedded_io_async::{Read, Write};
 use esp_alloc::HeapStats;
@@ -18,6 +20,12 @@ use {esp_backtrace as _, defmt as _};
 use esp_hal::system::software_reset;
 use edge_nal::{TcpBind};
 use embassy_net_esp_hosted::Control;
+use embedded_fatfs::{DefaultTimeProvider, FileSystem, LossyOemCpConverter};
+use embedded_hal_bus::spi::ExclusiveDevice;
+use esp_hal::Async;
+use esp_hal::gpio::Output;
+use esp_hal::spi::master::Spi;
+use sdspi::SdSpi;
 use crate::internal_flash::InternalFlash;
 use crate::util::get_file;
 
@@ -105,8 +113,8 @@ fn hex_val(c: u8) -> u8 {
 
 #[embassy_executor::task]
 pub async fn http_listen_task(stack: Stack<'static>, flash: &'static InternalFlash, control: Mutex<NoopRawMutex, Control<'static>>) {
-    let mut server = Box::new(edge_http::io::server::Server::<8,10_000,64>::new());
-    let box_buffers = Box::new(TcpBuffers::<8,10_000,3000>::new());
+    let mut server = edge_http::io::server::Server::<3,1_000,64>::new();
+    let box_buffers = TcpBuffers::<4,1_000,1_000>::new();
     let tcp = edge_nal_embassy::Tcp::new(stack,&box_buffers);
     let tcp_accept = tcp.bind("0.0.0.0:80".parse().unwrap()).await.unwrap();
 

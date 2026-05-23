@@ -316,15 +316,9 @@ pub fn new_ds_wifi_interface<'vif, 'foa>(
     let mac_address = interface_control.get_factory_mac_for_interface();
 
     interface_control.lock_channel(7).expect("TODO: panic message");
-    unsafe {
-        //workaround for power cycling
-        phy_set_most_tpw(20);
 
-        //workaround for channel setting
-        chip_v7_set_chan_nomac(7,0);
-    }
     interface_control.set_filter_parameters(BSSID,mac_address,None);
-    interface_control.set_filter_parameters(ReceiverAddress,mac_address,Some([0x00;6]));
+    interface_control.set_filter_parameters(ReceiverAddress,mac_address,Some([0xff;6]));
 
     interface_control.set_filter_status(BSSID,true);
     interface_control.set_filter_status(ReceiverAddress,true);

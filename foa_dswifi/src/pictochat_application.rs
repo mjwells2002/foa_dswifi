@@ -268,7 +268,7 @@ impl<'res> PictoChatApplication<'res> {
                         to: mac,
                         ..Default::default()
                     };
-                    payload.write_name("host");
+                    //thapayload.write_name("host");
                     payload_bytes.pwrite(payload, 0).unwrap();
 
                     let ident = PictochatType2 {
