@@ -631,7 +631,7 @@ async fn network_core_task(spawner: Spawner, flash: &'static mut InternalFlash) 
     let spi = Spi::new(
         peripherals.SPI3,
         Config::default()
-            .with_frequency(Rate::from_mhz(10))
+            .with_frequency(Rate::from_mhz(20))
             .with_mode(Mode::_1),
     ).unwrap()
         .with_sck(sck)

@@ -113,10 +113,11 @@ fn hex_val(c: u8) -> u8 {
 
 #[embassy_executor::task]
 pub async fn http_listen_task(stack: Stack<'static>, flash: &'static InternalFlash, control: Mutex<NoopRawMutex, Control<'static>>) {
-    let mut server = edge_http::io::server::Server::<3,1_000,64>::new();
-    let box_buffers = TcpBuffers::<4,1_000,1_000>::new();
+    let mut server = Box::new(edge_http::io::server::Server::<3,2_000,64>::new());
+    let box_buffers = Box::new(TcpBuffers::<4,6_000,6_000>::new());
     let tcp = edge_nal_embassy::Tcp::new(stack,&box_buffers);
     let tcp_accept = tcp.bind("0.0.0.0:80".parse().unwrap()).await.unwrap();
+    info!("HTTP Server Bound to port 80");
 
     let http_handler = HttpHandler {
         flash,
