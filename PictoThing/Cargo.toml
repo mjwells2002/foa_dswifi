@@ -49,5 +49,3 @@ ssd1306 = {  version = "0.10.0", features = ["async", "graphics"] }
 embedded-graphics = "0.8.1"
 #embedded-sprites = "0.2.0"
 #cfg-if = "1.0.1"
-blinksy = { version = "0.10.0",features = ["async"] }
-blinksy-esp = { version = "0.10.0",features = ["async","esp32"] }

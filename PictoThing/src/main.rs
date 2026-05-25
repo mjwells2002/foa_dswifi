@@ -30,7 +30,6 @@ use core::ptr::{addr_eq, addr_of_mut};
 use core::str::FromStr;
 use core::task::Poll;
 use aligned::A1;
-use blinksy::layout1d;
 use block_device_adapters::{BufStream, StreamSlice};
 use defmt::{error, expect, info, warn};
 use edge_dhcp::server::{Server, ServerOptions};
@@ -90,20 +89,10 @@ use sdspi::SdSpi;
 use static_cell::{make_static, StaticCell};
 use crate::http_server::http_listen_task;
 use crate::util::get_file;
-use blinksy::{
-    driver::clockless::ClocklessLed,
-    layout::Layout1d,
-    patterns::rainbow::{Rainbow, RainbowParams},
-    ControlBuilder,
-};
-use blinksy::drivers::sk6812::Sk6812Led;
-use blinksy::drivers::ws2812::Ws2812Led;
-use blinksy_esp::{create_rmt_buffer, time::elapsed, Sk6812Rmt, Ws2812Rmt};
-use blinksy_esp::rmt::ClocklessRmtDriver;
 use defmt::export::u8;
 use {esp_backtrace as _, defmt as _};
 use crate::led::LedController;
-use crate::sdcard::sdcard_task;
+use crate::sdcard::{SdCardController, SdCardEvent};
 
 esp_bootloader_esp_idf::esp_app_desc!();
 
@@ -849,6 +838,8 @@ async fn main(spawner: Spawner) {
     //spawner.spawn(sdcard_task()).expect("TODO: panic message");
     spawner.spawn(network_core_task(spawner,flash)).expect("TODO: panic message");
     LedController::init(&spawner);
+    SdCardController::init(&spawner);
+
 
     let mut color = [0u8;3];
 
@@ -863,15 +854,35 @@ async fn main(spawner: Spawner) {
         (  255, 0, 255),
     ];
 
+    let mut events = SdCardController::subscribe().unwrap();
+
     loop {
-        for color in COLOURS.iter() {
-            Timer::after_millis(1000).await;
-            let x = LedController::set(*color).await;
-            match x {
-                Ok(_) => {},
-                Err(e) => error!("Failed to set LED: {:?}", e),
+        let event = events.next_message_pure().await;
+        match event {
+            SdCardEvent::CardInserted => {
+                info!("SD card inserted");
+                LedController::set((255,0,0)).await.expect("a");
+                let x = SdCardController::read_file("/test.txt".to_string()).await;
+                if let Ok(content) = x {
+                    let string = String::from_utf8(content).unwrap();
+                    info!("FILE: {}", string.as_str());
+                } else {
+                    error!("Failed to read file");
+                }
+            }
+            SdCardEvent::CardRemoved => {
+                info!("SD card removed");
+                LedController::set((0,0,0)).await.expect("a");
             }
         }
+        // for color in COLOURS.iter() {
+        //     Timer::after_millis(1000).await;
+        //     let x = LedController::set(*color).await;LedController::set(*color).await;
+        //     match x {
+        //         Ok(_) => {},
+        //         Err(e) => error!("Failed to set LED: {:?}", e),
+        //     }
+        // }
     }
 
     // let spi3_sclk = peripherals.GPIO25;

@@ -27,6 +27,7 @@ use esp_hal::gpio::Output;
 use esp_hal::spi::master::Spi;
 use sdspi::SdSpi;
 use crate::internal_flash::InternalFlash;
+use crate::sdcard::{FileStat, SdCardController, SdCardError};
 use crate::util::get_file;
 
 fn guess_mime_type(filename: &str) -> &'static str {
@@ -238,18 +239,63 @@ impl Handler for HttpHandler {
             }
         }
 
-        let path = conn.headers()?.path;
-        let mut path_strip = if path.starts_with("/") {
-            path.strip_prefix("/").unwrap().to_string()
-        } else { path.parse().unwrap() };
+        let path_str = conn.headers()?.path;
+        let mut path_strip = if path_str.starts_with("/") {
+            path_str.strip_prefix("/").unwrap().to_string()
+        } else { path_str.parse().unwrap() };
 
-        if path == "/" {
+        if path_str == "/" {
             path_strip.push_str("index.html");
         }
 
         path_strip = url_decode(path_strip);
 
         let path_strip = path_strip.as_str();
+
+        if path[1] == "sdcard" {
+            let mut sdcard_path = path_strip.strip_prefix("sdcard").unwrap();
+            if sdcard_path.is_empty() {
+                sdcard_path = "/";
+            }
+            let stat = SdCardController::stat(sdcard_path.to_string()).await;
+
+            match stat {
+                Ok(FileStat::File { size }) => {
+                    conn.initiate_response(200, Some("OK"), &[("Content-Type", guess_mime_type(path_strip)),("Content-Length", format!("{}",size).as_str()),("Connection","Close")]).await?;
+                    let mut reader = SdCardController::read_file_chunked(sdcard_path.to_string(), 1_000_000);
+                    while let Some(chunk) = reader.next().await {
+                        let data = chunk.map_err(|_| edge_http::io::Error::InvalidState)?;
+                        conn.write_all(&data).await?;
+                        conn.flush().await?;
+                    }
+                    conn.complete().await?;
+                },
+                Ok(FileStat::Directory) => {
+                    let listing = SdCardController::list_files(sdcard_path.to_string()).await;
+                    if let Err(listing) = listing {
+                        info!("Failed to list files: {}", listing);
+                        conn.initiate_response(500, Some("Internal Server Error"), &[("Connection","Close")]).await?;
+                        conn.complete().await?;
+                        return Ok(());
+                    }
+                    let listing = listing.unwrap();
+                    conn.initiate_response(200, Some("OK"), &[("Content-Type", "text/html"),("Connection","Close")]).await?;
+                    for file in listing {
+                        let html_link = format!("<a href=\"/{}/{}\">{}</a>", path_strip, file, file);
+
+                        conn.write_all(html_link.as_bytes()).await?;
+                        conn.write_all(&[13, 10]).await?;
+                    }
+                    conn.flush().await?;
+                    conn.complete().await?;
+                }
+                Err(_) => {
+                    conn.initiate_response(404, Some("Not Found"), &[("Connection","Close")]).await?;
+                    conn.complete().await?;
+                }
+            }
+            return Ok(());
+        }
 
         let mut is_gzip = false;
 
